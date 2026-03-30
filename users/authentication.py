@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
+from core.crm.models import Customer
 import qrcode
 from io import BytesIO
 import base64
@@ -53,9 +54,24 @@ class LoginView(APIView):
     def post(self, request):
         email = request.data.get('email')
         password = request.data.get('password')
+        ecommerce = request.data.get('ecommerce', False)
         user = authenticate(email=email, password=password)
-
+            
         if user:
+            is_customer = user.role == 'client' and Customer.objects.filter(user=user).exists()
+
+            if is_customer:
+                if ecommerce:
+                    refresh = RefreshToken.for_user(user)
+                    return Response({
+                        "refresh": str(refresh),
+                        "access": str(refresh.access_token),
+                        "user_id": user.id,
+                        "user_name": f'{user.first_name} {user.last_name}',
+                    }, status=200)
+                else:
+                    return Response({"error": "not_authorized"}, status=403)
+
             if user.is_2fa_enabled:
                 return Response({
                     "message": "2fa_required", 
@@ -94,6 +110,11 @@ class VerifyOTPView(APIView):
             user = User.objects.get(email=email)
         except User.DoesNotExist:
             return Response({"error": "user_not_found"}, status=404)
+
+        if user.role == 'client':
+            is_customer = Customer.objects.filter(user=user).exists()
+            if not is_customer:
+                return Response({"error": "not_authorized"}, status=403)
 
         if not user.is_2fa_enabled and not user.first_login:
             return Response({"error": "2fa_not_enabled"}, status=403)

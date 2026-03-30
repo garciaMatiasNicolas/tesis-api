@@ -14,10 +14,7 @@ class CustomerListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer
         fields = [
-            'id', 'customer_type', 'full_name', 'display_name',
-            'email', 'phone', 'city', 'state', 'country',
-            'total_spent', 'last_purchase_date', 'last_contact_date', 'contacts_count',
-            'created_at', 'updated_at'
+            'id', 'customer_type', 'full_name', 'display_name', 'first_name', 'last_name', 'date_of_birth', 'name', 'fantasy_name', 'email', 'phone', 'city', 'state', 'country', 'postal_code', 'address', 'cuit', 'comments', 'total_spent', 'last_purchase_date', 'last_contact_date', 'contacts_count', 'created_at', 'updated_at'
         ]
         
     def get_full_name(self, obj):
@@ -194,16 +191,19 @@ class CustomerUpdateSerializer(serializers.ModelSerializer):
 class CustomerContactSerializer(serializers.ModelSerializer):
     """Serializer para agregar contactos al historial"""
     comment = serializers.CharField(write_only=True, required=True)
+    medium = serializers.CharField(write_only=True, required=False, allow_blank=True)
     
     class Meta:
         model = Customer
-        fields = ['comment', 'contact_history']
+        fields = ['comment', 'medium', 'contact_history']
         read_only_fields = ['contact_history']
         
     def update(self, instance, validated_data):
         comment = validated_data.pop('comment')
+        medium = validated_data.pop('medium', None)
         # Usar el método add_contact del modelo
-        contact = instance.add_contact(comment, user=self.context['request'].user)
+        user = User.objects.get(id=self.context['request'].user.id)
+        instance.add_contact(comment, medium=medium, user=user)
         return instance
 
 

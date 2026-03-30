@@ -12,6 +12,7 @@ from .serializer import UserSerializer, EmployeeSerializer, SupplierSerializer, 
 from .models import Employee, Supplier
 from rest_framework.permissions import IsAuthenticated
 from core.store.models import Branch
+from .permissions import IsNotClientPermission
 
 User = get_user_model()
 
@@ -51,7 +52,7 @@ class UserModelViewSet(viewsets.ModelViewSet):
         
         if serializer.is_valid():
             user = serializer.save()
-            return Response({"message": "user_created", "user": self.get_serializer_class(user).data}, status=status.HTTP_201_CREATED)
+            return Response({"message": "user_created", "user": self.get_serializer(user).data}, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
     ## Actualiza un usuario por su ID
@@ -97,10 +98,30 @@ class EmailExistsAPIView(APIView):
             return Response(data={'available': True, 'exists': False}, status=status.HTTP_200_OK)
 
 
+class VerifyIsClientAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        
+        user_data = {
+            'id': user.id,
+            'email': user.email,
+            'first_name': user.first_name,
+            'last_name': user.last_name,
+            'role': user.role
+        }
+        
+        if user.role == 'client':
+            return Response(data={'is_client': True, 'user': user_data}, status=status.HTTP_200_OK)
+        else:
+            return Response(data={'is_client': False, 'user': user_data}, status=status.HTTP_200_OK)
+
+
 class EmployeeViewSet(viewsets.ModelViewSet):
     queryset = Employee.objects.all()
     serializer_class = EmployeeSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsNotClientPermission]
 
     def get_serializer_class(self):
         if self.action == 'create':
@@ -173,7 +194,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
 
         serializer = self.get_serializer(data=request.data)
         if serializer.is_valid():
-            employee = serializer.save()
+            serializer.save()
             return Response(
                 {"message": "Empleado creado exitosamente", "employee": serializer.data}, 
                 status=status.HTTP_201_CREATED
@@ -324,7 +345,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
 class SupplierViewSet(viewsets.ModelViewSet):
     queryset = Supplier.objects.all()
     serializer_class = SupplierSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsNotClientPermission]
 
     def list(self, request, *args, **kwargs):
         # Todos los usuarios autenticados pueden ver proveedores

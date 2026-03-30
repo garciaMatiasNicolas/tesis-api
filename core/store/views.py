@@ -1,20 +1,22 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
 from .models import Store, Branch
+from users.permissions import IsNotClientPermission
 from .serializer import (
     StoreSerializer, 
     StoreCreateSerializer, 
-    StoreActivationSerializer,
-    BranchSerializer
+    BranchSerializer,
+    StoreConfigSerializer
 )
 
 
 class StoreViewSet(viewsets.ModelViewSet):
     queryset = Store.objects.all()
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsNotClientPermission]
 
     def get_queryset(self):
         return Store.objects.all()
@@ -22,8 +24,7 @@ class StoreViewSet(viewsets.ModelViewSet):
     def get_serializer_class(self):
         if self.action == 'create':
             return StoreCreateSerializer
-        elif self.action in ['activate', 'deactivate']:
-            return StoreActivationSerializer
+        
         return StoreSerializer
 
     def perform_create(self, serializer):
@@ -62,45 +63,19 @@ class StoreViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
 
-    @action(detail=True, methods=['patch'])
-    def activate(self, request, pk=None):
-        """Activar una tienda"""
-        store = self.get_object()
-        
-        # Solo el owner o admin pueden activar
-        if request.user != store.owner and request.user.role != 'admin':
+    @action(detail=False, methods=['get'], url_path='my-store')
+    def my_store(self, request):
+        """Obtener la tienda del usuario autenticado"""
+        try:
+            store = Store.objects.get(owner=request.user)
+            serializer = StoreSerializer(store)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Store.DoesNotExist:
             return Response(
-                {"error": "No tienes permisos para activar esta tienda"}, 
-                status=status.HTTP_403_FORBIDDEN
+                {"error": "No tienes una tienda asociada"}, 
+                status=status.HTTP_404_NOT_FOUND
             )
-        
-        store.is_active = True
-        store.save()
-        
-        return Response(
-            {"message": f"Tienda {store.name} activada exitosamente"}, 
-            status=status.HTTP_200_OK
-        )
 
-    @action(detail=True, methods=['patch'])
-    def deactivate(self, request, pk=None):
-        """Desactivar una tienda"""
-        store = self.get_object()
-        
-        # Solo el owner o admin pueden desactivar
-        if request.user != store.owner and request.user.role != 'admin':
-            return Response(
-                {"error": "No tienes permisos para desactivar esta tienda"}, 
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        store.is_active = False
-        store.save()
-        
-        return Response(
-            {"message": f"Tienda {store.name} desactivada exitosamente"}, 
-            status=status.HTTP_200_OK
-        )
 
     @action(detail=True, methods=['get'])
     def branches(self, request, pk=None):
@@ -114,7 +89,7 @@ class StoreViewSet(viewsets.ModelViewSet):
 class BranchViewSet(viewsets.ModelViewSet):
     queryset = Branch.objects.all()
     serializer_class = BranchSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsNotClientPermission]
 
     def get_queryset(self):
         return Branch.objects.all()
@@ -168,3 +143,53 @@ class BranchViewSet(viewsets.ModelViewSet):
             )
         
         instance.delete()
+
+
+class StoreConfigView(APIView):
+    """
+    Vista pública para obtener la configuración de la tienda activa para el ecommerce
+    """
+    permission_classes = [AllowAny]
+    
+    def get(self, request):
+        try:
+            # Obtener la tienda activa (asumiendo que solo hay una tienda activa)
+            store = Store.objects.filter(is_active=True).first()
+            
+            if not store:
+                return Response(
+                    {
+                        "error": "No hay tienda activa disponible",
+                        "default_config": {
+                            "id": None,
+                            "name": "E-commerce",
+                            "logo": None,
+                            "view_only": True,
+                            "is_active": False,
+                            "theme_id": "wine",
+                            "dark_mode": False
+                        }
+                    }, 
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            serializer = StoreConfigSerializer(store)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response(
+                {
+                    "error": "Error interno del servidor",
+                    "detail": str(e),
+                    "default_config": {
+                        "id": None,
+                        "name": "E-commerce",
+                        "logo": None,
+                        "view_only": True,
+                        "is_active": False,
+                        "dark_mode": False,
+                        "theme_id": "wine"
+                    }
+                }, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

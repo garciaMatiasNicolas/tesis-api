@@ -102,6 +102,7 @@ class Supplier(models.Model):
     postal_code = models.CharField(max_length=20, null=True, blank=True)
     city = models.CharField(max_length=100, null=True, blank=True)
     address = models.CharField(max_length=250, null=True, blank=True)
+    lead_time_days = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

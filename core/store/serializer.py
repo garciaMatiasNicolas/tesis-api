@@ -3,6 +3,27 @@ from .models import Store, Branch
 from users.models import User
 
 
+class StoreConfigSerializer(serializers.ModelSerializer):
+    """
+    Serializer para la configuración pública de la tienda (ecommerce)
+    """
+    class Meta:
+        model = Store
+        fields = ['id', 'name', 'logo', 'view_only', 'is_active', 'dark_mode', 'theme_id', 'phone']
+        read_only_fields = ['id', 'name', 'logo', 'view_only', 'is_active', 'dark_mode', 'theme_id', 'phone']
+
+
+class StoreThemeConfigSerializer(serializers.ModelSerializer):
+    """
+    Serializer para actualizar la configuración visual de la tienda (logo y paleta de colores)
+    """
+    class Meta:
+        model = Store
+        fields = ['logo', 'theme_id', 'dark_mode']
+        
+    # Las validaciones de los colores han sido eliminadas ya que ahora se usa theme_id
+
+
 class BranchSerializer(serializers.ModelSerializer):
     manager_name = serializers.SerializerMethodField()
     
@@ -133,7 +154,8 @@ class StoreSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'slug', 'logo', 'is_active', 'view_only',
             'country', 'state', 'postal_code', 'city', 'address', 'phone',
-            'owner', 'owner_name', 'branches', 'created_at', 'updated_at'
+            'owner', 'owner_name', 'branches', 'created_at', 'updated_at', 
+            'dark_mode', 'theme_id'
         ]
         read_only_fields = ['id', 'slug', 'owner_name', 'branches', 'created_at', 'updated_at']
 
@@ -177,7 +199,7 @@ class StoreSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         # Campos que deben sincronizarse con la sucursal principal
         sync_fields = ['country', 'state', 'postal_code', 'city', 'address']
-        
+
         # Guardar los valores anteriores para comparar
         old_values = {field: getattr(instance, field) for field in sync_fields}
         
@@ -233,7 +255,7 @@ class StoreCreateSerializer(serializers.ModelSerializer):
         model = Store
         fields = [
             'name', 'logo', 'country', 'state', 'postal_code', 
-            'city', 'address', 'phone'
+            'city', 'address', 'phone', 'theme_id', 'dark_mode'
         ]
 
     def create(self, validated_data):
@@ -315,11 +337,3 @@ class StoreCreateSerializer(serializers.ModelSerializer):
                 )
         
         return updated_store
-
-
-class StoreActivationSerializer(serializers.ModelSerializer):
-    """Serializer para activar/desactivar tiendas"""
-    
-    class Meta:
-        model = Store
-        fields = ['is_active', 'view_only']

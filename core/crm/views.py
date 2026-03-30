@@ -5,6 +5,8 @@ from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from django.contrib.auth import get_user_model
+Users = get_user_model()
 from .models import Customer
 from .serializer import (
     CustomerListSerializer,
@@ -113,15 +115,31 @@ class CustomerViewSet(viewsets.ModelViewSet):
     def update(self, request, *args, **kwargs):
         """Actualizar cliente completo"""
         partial = kwargs.pop('partial', False)
-        instance = self.get_object()
-        
-        # Verificar permisos
-        if not hasattr(request.user, 'role') or request.user.role not in ['superadmin', 'manager', 'employee']:
+
+        try:
+            instance = self.get_object()
+        except Customer.DoesNotExist:
+            instance = Customer.objects.get(user=request.user)
+            if instance is None:
+                return Response(
+                    {"error": "Cliente no encontrado"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+       
             return Response(
-                {"error": "No tienes permisos para actualizar clientes"}, 
+                {"error": "No tienes permisos para actualizar este cliente"},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+
+        # Verificar permisos
+        if not hasattr(request.user, 'role') or request.user.role not in ['superadmin', 'manager', 'employee']:
+            if request.user != instance.user:
+                return Response(
+                    {"error": "No tienes permisos para actualizar este cliente"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
         customer = serializer.save()
@@ -133,7 +151,6 @@ class CustomerViewSet(viewsets.ModelViewSet):
     def destroy(self, request, *args, **kwargs):
         """Eliminar cliente"""
         instance = self.get_object()
-        
         # Verificar permisos (solo superadmin y manager pueden eliminar)
         if not hasattr(request.user, 'role') or request.user.role not in ['superadmin', 'manager']:
             return Response(
@@ -149,6 +166,10 @@ class CustomerViewSet(viewsets.ModelViewSet):
             )
         
         customer_name = str(instance)
+        
+        if instance.user:
+            Users.objects.filter(id=instance.user.id).delete()
+        
         instance.delete()
         
         return Response(

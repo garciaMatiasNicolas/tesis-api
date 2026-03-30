@@ -9,6 +9,8 @@ def _upload_to(instance, filename, folder):
 class Store(models.Model):
     is_active = models.BooleanField(default=False)
     view_only = models.BooleanField(default=True)
+    dark_mode = models.BooleanField(default=False)
+    theme_id = models.CharField(max_length=100, blank=True, null=True, default='wine')
     logo = models.ImageField(upload_to=_upload_to, blank=True, null=True)
     name = models.CharField(max_length=100, unique=True)
     slug = models.SlugField(unique=True, blank=True, max_length=150)

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from core.store.models import Store
+from core.crm.models import Customer
 
 User = get_user_model()
 
@@ -20,8 +20,9 @@ class UserSerializer(serializers.ModelSerializer):
             'is_staff',
             'created_at',
             'updated_at',
+            'password'
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'is_active', 'is_staff', 'role']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'is_active', 'is_staff']
 
     def validate_email(self, value):
         if not value:
@@ -45,14 +46,23 @@ class UserSerializer(serializers.ModelSerializer):
         return value
     
     def create(self, validated_data):
-        request = self.context.get('request', None)
-        current_user = request.user if request else None
         user = User.objects.create_user(
             email=validated_data['email'],
             first_name=validated_data['first_name'],
             last_name=validated_data['last_name'],
-            role=validated_data['role']
+            role=validated_data['role'],
+            password=validated_data['password']
         )
+
+        if user.role == "client":
+            Customer.objects.create(
+                user=user,
+                customer_type=Customer.PERSON,
+                first_name=user.first_name,
+                last_name=user.last_name,
+                email=user.email
+            )
+    
 
         return user
 
@@ -153,7 +163,7 @@ class SupplierSerializer(serializers.ModelSerializer):
         model = Supplier
         fields = [
             'id', 'name', 'fantasy_name', 'email', 'phone', 'website', 'cuit',
-            'country', 'state', 'postal_code', 'city', 'address',
+            'country', 'state', 'postal_code', 'city', 'address', 'lead_time_days',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']

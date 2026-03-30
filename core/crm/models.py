@@ -17,7 +17,7 @@ class Customer(models.Model):
     customer_type = models.CharField(max_length=10, choices=CUSTOMER_TYPE_CHOICES, default=PERSON)
 
     # Comunes
-    email = models.EmailField(max_length=254, null=True, blank=True)
+    email = models.EmailField(max_length=254, null=True, blank=True, unique=True)
     phone = models.CharField(max_length=20, null=True, blank=True)
     address = models.CharField(max_length=250, null=True, blank=True)
     country = models.CharField(max_length=100, null=True, blank=True)
@@ -48,12 +48,13 @@ class Customer(models.Model):
             return f"{self.first_name} {self.last_name}"
         return self.name or "Cliente sin nombre"
 
-    def add_contact(self, comment, user=None):
+    def add_contact(self, comment, medium=None, user=None):
         """Agregar un nuevo contacto al historial"""
         contact = {
             'date': timezone.now().isoformat(),
             'comment': comment,
-            'user': user.username if user else 'Sistema',
+            'medium': medium,
+            'user': f'{user.first_name} {user.last_name}' if user else 'Sistema',
             'user_id': user.id if user else None
         }
         
