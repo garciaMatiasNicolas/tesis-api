@@ -11,6 +11,9 @@ urlpatterns = [
     path('subcategories/', views.SubcategoryList.as_view(), name='subcategory-list'),
     path('suppliers/', views.SupplierList.as_view(), name='supplier-list'),
     
+    # Registro de clientes
+    path('register/', views.CustomerRegistration.as_view(), name='customer-registration'),
+    
     # Vistas de carritos
     path('carts/', views.CartManagement.as_view(), name='cart-management'),
     path('carts/<int:cart_id>/items/', views.CartItemManagement.as_view(), name='cart-item-list'),

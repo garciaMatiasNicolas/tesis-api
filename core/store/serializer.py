@@ -11,6 +11,21 @@ class StoreConfigSerializer(serializers.ModelSerializer):
         model = Store
         fields = ['id', 'name', 'logo', 'view_only', 'is_active', 'dark_mode', 'theme_id', 'phone']
         read_only_fields = ['id', 'name', 'logo', 'view_only', 'is_active', 'dark_mode', 'theme_id', 'phone']
+    
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        request = self.context.get('request')
+        
+        # Construir URL absoluta para el logo
+        if instance.logo and request:
+            try:
+                representation['logo'] = request.build_absolute_uri(instance.logo.url)
+            except:
+                representation['logo'] = None
+        elif not instance.logo:
+            representation['logo'] = None
+            
+        return representation
 
 
 class StoreThemeConfigSerializer(serializers.ModelSerializer):
@@ -161,6 +176,21 @@ class StoreSerializer(serializers.ModelSerializer):
 
     def get_owner_name(self, obj):
         return f"{obj.owner.first_name} {obj.owner.last_name}" if obj.owner else None
+    
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        request = self.context.get('request')
+        
+        # Construir URL absoluta para el logo
+        if instance.logo and request:
+            try:
+                representation['logo'] = request.build_absolute_uri(instance.logo.url)
+            except:
+                representation['logo'] = None
+        elif not instance.logo:
+            representation['logo'] = None
+            
+        return representation
 
     def create(self, validated_data):
         # El owner será el usuario actual

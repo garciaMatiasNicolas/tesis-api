@@ -3,10 +3,21 @@ from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.decorators import action
+from rest_framework.pagination import PageNumberPagination
+import os
+from decimal import Decimal
+from django.conf import settings
 from .models import Product, Category, Subcategory, Warehouse, ProductUnit, Stock, StockMovement
 from .serializers import ProductSerializer, CategorySerializer, SubcategorySerializer, WarehouseSerializer, ProductUnitSerializer, StockSerializer, StockMovementSerializer
 from users.permissions import IsNotClientPermission
-from core.store.models import Store
+from core.store.models import Store, Branch
+from django.db import transaction
+
+
+class StockMovementPagination(PageNumberPagination):
+    page_size = 5
+    page_size_query_param = 'page_size'
+    max_page_size = 100
 
 
 class ProductViewSet(viewsets.ModelViewSet):
@@ -86,8 +97,20 @@ class ProductViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'], parser_classes=[MultiPartParser, FormParser])
     def upload_image(self, request, pk=None):
-        """Endpoint específico para subir imagen de producto"""
+        """
+        Endpoint para subir imágenes de producto al servidor local.
+        Soporta hasta 3 imágenes por producto.
+        Estructura: media/images/{store}/{sku}/image_1.jpg
+        """
         product = self.get_object()
+        
+        # Determinar qué imagen se está subiendo (image_1, image_2, o image_3)
+        image_slot = request.data.get('slot', 'image_1')  # Por defecto image_1
+        if image_slot not in ['image_1', 'image_2', 'image_3']:
+            return Response(
+                {'error': 'Slot de imagen inválido. Use: image_1, image_2, o image_3'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
         
         if 'image' not in request.FILES:
             return Response(
@@ -95,42 +118,122 @@ class ProductViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Eliminar imagen anterior si existe
-        if product.image:
-            product.image.delete(save=False)
-        
-        # Asignar nueva imagen
-        product.image = request.FILES['image']
-        
-        # Validar usando el serializer
-        serializer = self.get_serializer(product, data={'image': request.FILES['image']}, partial=True)
-        serializer.is_valid(raise_exception=True)
-        product.save()
-        
-        return Response({
-            'message': 'Imagen subida exitosamente',
-            'image_url': product.image.url
-        }, status=status.HTTP_200_OK)
+        try:
+            image_file = request.FILES['image']
+            
+            # Validar tamaño (máximo 5MB)
+            if image_file.size > 5 * 1024 * 1024:
+                return Response(
+                    {'error': 'El archivo de imagen no puede ser mayor a 5MB'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Validar tipo
+            allowed_types = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp']
+            if image_file.content_type not in allowed_types:
+                return Response(
+                    {'error': 'Solo se permiten archivos JPEG, PNG, GIF y WebP'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Eliminar imagen anterior si existe
+            current_image = getattr(product, image_slot)
+            if current_image:
+                try:
+                    # Construir ruta completa del archivo
+                    old_image_path = os.path.join(settings.MEDIA_ROOT, str(current_image))
+                    if os.path.exists(old_image_path):
+                        os.remove(old_image_path)
+                except Exception as e:
+                    print(f"Error al eliminar imagen anterior: {e}")
+            
+            # Guardar nueva imagen usando el ImageField
+            setattr(product, image_slot, image_file)
+            product.save()
+            
+            # Obtener URL completa de la imagen
+            image_url = request.build_absolute_uri(getattr(product, image_slot).url)
+            
+            return Response({
+                'message': f'Imagen {image_slot} subida exitosamente',
+                'slot': image_slot,
+                'image_url': image_url,
+                'all_images': {
+                    'image_1': request.build_absolute_uri(product.image_1.url) if product.image_1 else None,
+                    'image_2': request.build_absolute_uri(product.image_2.url) if product.image_2 else None,
+                    'image_3': request.build_absolute_uri(product.image_3.url) if product.image_3 else None,
+                }
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response(
+                {'error': f'Error al subir imagen: {str(e)}'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
     
     @action(detail=True, methods=['delete'])
     def delete_image(self, request, pk=None):
-        """Endpoint para eliminar imagen de producto"""
+        """
+        Endpoint para eliminar imagen de producto del servidor local.
+        Puede eliminar una imagen específica o todas.
+        """
         product = self.get_object()
         
-        if not product.image:
+        # Determinar qué imagen eliminar
+        image_slot = request.query_params.get('slot', 'all')  # Por defecto elimina todas
+        
+        if image_slot not in ['image_1', 'image_2', 'image_3', 'all']:
             return Response(
-                {'error': 'El producto no tiene imagen'}, 
+                {'error': 'Slot de imagen inválido. Use: image_1, image_2, image_3, o all'}, 
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Eliminar archivo físico
-        product.image.delete(save=False)
-        product.image = None
-        product.save()
-        
-        return Response({
-            'message': 'Imagen eliminada exitosamente'
-        }, status=status.HTTP_200_OK)
+        try:
+            deleted_images = []
+            
+            # Eliminar imagen específica o todas
+            slots_to_delete = ['image_1', 'image_2', 'image_3'] if image_slot == 'all' else [image_slot]
+            
+            for slot in slots_to_delete:
+                current_image = getattr(product, slot)
+                
+                if current_image:
+                    try:
+                        # Construir ruta completa del archivo
+                        image_path = os.path.join(settings.MEDIA_ROOT, str(current_image))
+                        # Eliminar archivo físico si existe
+                        if os.path.exists(image_path):
+                            os.remove(image_path)
+                            deleted_images.append(slot)
+                        
+                        # Limpiar campo en base de datos
+                        setattr(product, slot, None)
+                    except Exception as e:
+                        print(f"Error al eliminar {slot}: {e}")
+            
+            if not deleted_images:
+                return Response(
+                    {'error': 'No hay imágenes para eliminar'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            product.save()
+            
+            return Response({
+                'message': f'Imagen(es) eliminada(s) exitosamente: {", ".join(deleted_images)}',
+                'deleted_slots': deleted_images,
+                'remaining_images': {
+                    'image_1': request.build_absolute_uri(product.image_1.url) if product.image_1 else None,
+                    'image_2': request.build_absolute_uri(product.image_2.url) if product.image_2 else None,
+                    'image_3': request.build_absolute_uri(product.image_3.url) if product.image_3 else None,
+                }
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response(
+                {'error': f'Error al eliminar imagen: {str(e)}'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 class CategoryViewSet(viewsets.ModelViewSet):
@@ -402,14 +505,13 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
         }, status=status.HTTP_200_OK)
 
 
-class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
+class StockMovementViewSet(viewsets.ModelViewSet):
     """
-    ViewSet de solo lectura para StockMovement.
-    Los movimientos de stock no pueden ser creados, actualizados o eliminados directamente desde aquí.
-    Se crean automáticamente a través de:
-    - Órdenes de compra (PurchaseOrder)
-    - Órdenes de venta (SalesOrder)
-    - Transferencias entre ubicaciones
+    ViewSet para StockMovement.
+    Los movimientos de stock pueden ser:
+    - Consultados (GET)
+    - Creados manualmente para transferencias internas (POST)
+    Los movimientos de compras y ventas se crean automáticamente.
     """
     queryset = StockMovement.objects.select_related(
         'product', 
@@ -421,10 +523,154 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
     ).all().order_by('-date')
     serializer_class = StockMovementSerializer
     permission_classes = [IsNotClientPermission]
+    pagination_class = StockMovementPagination
+    http_method_names = ['get', 'post', 'head', 'options']  # Solo permitir GET y POST
+    
+    def create(self, request, *args, **kwargs):
+        """
+        Crear un movimiento interno de stock.
+        Valida que haya stock suficiente y actualiza las ubicaciones.
+        """
+        data = request.data
+        
+        # Validar campos requeridos
+        required_fields = ['product', 'fromLocationType', 'fromLocation', 'toLocationType', 'toLocation', 'quantity']
+        for field in required_fields:
+            if field not in data or not data[field]:
+                return Response(
+                    {'error': f'El campo {field} es requerido'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        
+        try:
+            product = Product.objects.get(id=data['product'])
+        except Product.DoesNotExist:
+            return Response(
+                {'error': 'Producto no encontrado'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        from_type = data['fromLocationType']  # WHA o BRA
+        from_id = data['fromLocation']
+        to_type = data['toLocationType']  # WHA o BRA
+        to_id = data['toLocation']
+        quantity = Decimal(str(data['quantity']))
+        note = data.get('note', '')
+        
+        # Validar que origen y destino sean diferentes
+        if from_type == to_type and from_id == to_id:
+            return Response(
+                {'error': 'El origen y destino deben ser diferentes'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validar cantidad
+        if quantity <= 0:
+            return Response(
+                {'error': 'La cantidad debe ser mayor a 0'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Obtener ubicaciones
+        from_warehouse = None
+        from_branch = None
+        to_warehouse = None
+        to_branch = None
+        
+        try:
+            if from_type == 'WHA':
+                from_warehouse = Warehouse.objects.get(id=from_id)
+            else:
+                from_branch = Branch.objects.get(id=from_id)
+                
+            if to_type == 'WHA':
+                to_warehouse = Warehouse.objects.get(id=to_id)
+            else:
+                to_branch = Branch.objects.get(id=to_id)
+        except (Warehouse.DoesNotExist, Branch.DoesNotExist):
+            return Response(
+                {'error': 'Ubicación no encontrada'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Validar stock en origen
+        try:
+            if from_type == 'WHA':
+                stock_origin = Stock.objects.get(product=product, warehouse=from_warehouse)
+            else:
+                stock_origin = Stock.objects.get(product=product, branch=from_branch)
+                
+            if stock_origin.quantity < quantity:
+                location_name = from_warehouse.name if from_warehouse else from_branch.name
+                return Response(
+                    {
+                        'error': f'Stock insuficiente en {location_name}',
+                        'detail': f'Stock disponible: {stock_origin.quantity} {product.base_unit_name}, solicitado: {quantity} {product.base_unit_name}'
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        except Stock.DoesNotExist:
+            location_name = from_warehouse.name if from_warehouse else from_branch.name
+            return Response(
+                {'error': f'No hay stock de {product.description} en {location_name}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        with transaction.atomic():
+            # Crear o actualizar stock en destino
+            if to_type == 'WHA':
+                stock_dest, created = Stock.objects.get_or_create(
+                    product=product,
+                    warehouse=to_warehouse,
+                    defaults={'quantity': 0}
+                )
+            else:
+                stock_dest, created = Stock.objects.get_or_create(
+                    product=product,
+                    branch=to_branch,
+                    defaults={'quantity': 0}
+                )
+        
+            # Actualizar cantidades
+            stock_origin.quantity -= quantity
+            stock_origin.save()
+            
+            stock_dest.quantity += quantity
+            stock_dest.save()
+            
+            # Determinar qué ubicación usar para el movimiento (usamos la que sea warehouse o branch)
+            movement_warehouse = from_warehouse or to_warehouse
+            movement_branch = from_branch or to_branch
+            
+            # Crear el movimiento de stock
+            movement = StockMovement.objects.create(
+                product=product,
+                warehouse=movement_warehouse,
+                branch=movement_branch,
+                from_location=from_type,
+                to_location=to_type,
+                movement_type='OUT' if from_type in ['WHA', 'BRA'] else 'IN',
+                quantity=quantity,
+                status='REC',  # Movimientos internos se marcan como recibidos inmediatamente
+                note=note,
+                conversion_factor_at_moment=Decimal('1.0')
+            )
+            
+            # Agregar comentario al movimiento
+            from_name = from_warehouse.name if from_warehouse else from_branch.name
+            to_name = to_warehouse.name if to_warehouse else to_branch.name
+            movement.add_comment(
+                f'Movimiento interno: {quantity} {product.base_unit_name} de {from_name} a {to_name}',
+                status_before=None,
+                user=request.user
+            )
+            
+            serializer = self.get_serializer(movement)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
     
     def list(self, request, *args, **kwargs):
         """
-        Listar todos los movimientos de stock con filtros opcionales.
+        Listar todos los movimientos de stock con filtros opcionales y paginación.
         Query params:
         - product: ID del producto
         - warehouse: ID del depósito
@@ -437,6 +683,8 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
         - purchase: ID de la orden de compra
         - date_from: Fecha desde (formato: YYYY-MM-DD)
         - date_to: Fecha hasta (formato: YYYY-MM-DD)
+        - page: Número de página (default: 1)
+        - page_size: Tamaño de página (default: 5, max: 100)
         """
         queryset = self.get_queryset()
         
@@ -485,6 +733,12 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
         
         if date_to:
             queryset = queryset.filter(date__lte=date_to)
+        
+        # Aplicar paginación
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
         
         serializer = self.get_serializer(queryset, many=True)
         

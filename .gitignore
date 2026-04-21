@@ -4,3 +4,4 @@ models.txt
 migrations
 __pycache__/
 *.pyc
+.venv

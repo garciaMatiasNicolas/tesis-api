@@ -11,22 +11,66 @@ class ProductSerializer(serializers.ModelSerializer):
         model = Product
         fields = '__all__'
     
-    def validate_image(self, value):
+    def validate_image_1(self, value):
+        """Validar el archivo de imagen 1"""
+        return self._validate_image(value)
+    
+    def validate_image_2(self, value):
+        """Validar el archivo de imagen 2"""
+        return self._validate_image(value)
+    
+    def validate_image_3(self, value):
+        """Validar el archivo de imagen 3"""
+        return self._validate_image(value)
+    
+    def _validate_image(self, value):
         """Validar el archivo de imagen"""
         if value:
             # Validar tamaño del archivo (máximo 5MB)
-            if value.size > 5 * 1024 * 1024:
+            if hasattr(value, 'size') and value.size > 5 * 1024 * 1024:
                 raise serializers.ValidationError("El archivo de imagen no puede ser mayor a 5MB.")
             
             # Validar tipo de archivo
-            allowed_types = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif']
-            if value.content_type not in allowed_types:
-                raise serializers.ValidationError("Solo se permiten archivos JPEG, PNG y GIF.")
+            if hasattr(value, 'content_type'):
+                allowed_types = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp']
+                if value.content_type not in allowed_types:
+                    raise serializers.ValidationError("Solo se permiten archivos JPEG, PNG, GIF y WebP.")
         
         return value
     
     def to_representation(self, instance):
-        return {
+        # Construir lista de imágenes con manejo robusto de errores
+        images = []
+        request = self.context.get('request')
+        
+        def get_image_url(image_field):
+            """Helper para obtener la URL de una imagen de forma segura"""
+            if not image_field:
+                return None
+            try:
+                url = image_field.url
+                # Si hay request, construir URL absoluta
+                if request:
+                    return request.build_absolute_uri(url)
+                return url
+            except Exception as e:
+                print(f"Error getting image URL: {e}")
+            return None
+        
+        # Obtener URLs de las 3 imágenes
+        image_1_url = get_image_url(instance.image_1)
+        image_2_url = get_image_url(instance.image_2)
+        image_3_url = get_image_url(instance.image_3)
+        
+        # Construir array de imágenes
+        if image_1_url:
+            images.append(image_1_url)
+        if image_2_url:
+            images.append(image_2_url)
+        if image_3_url:
+            images.append(image_3_url)
+        
+        representation = {
             "id": instance.id,
             "description": instance.description,
             "price": instance.price,
@@ -40,13 +84,20 @@ class ProductSerializer(serializers.ModelSerializer):
             "width": instance.width,
             "cost_price": instance.cost_price,
             "safety_stock": float(instance.safety_stock.normalize()) if instance.safety_stock else 0.0,
-            "base_unit_name": instance.get_base_unit_name_display(),
-            "unit_type": instance.get_unit_type_display(),
-            "image": instance.image.url if instance.image else None,
+            "base_unit_name": instance.base_unit_name,
+            "base_unit_name_display": instance.get_base_unit_name_display(),
+            "unit_type": instance.unit_type,
+            "unit_type_display": instance.get_unit_type_display(),
+            "image": images[0] if images else None,  # Para compatibilidad
+            "images": images,  # Array de todas las imágenes
+            "image_1": image_1_url,
+            "image_2": image_2_url,
+            "image_3": image_3_url,
             "status": instance.status,  
             "created_at": instance.created_at,
             "updated_at": instance.updated_at,
         }
+        return representation
 
 
 class ProductUnitSerializer(serializers.ModelSerializer):
@@ -220,7 +271,10 @@ class StockSerializer(serializers.ModelSerializer):
         
         return SalesItem.objects.filter(
             product=obj.product,
-            sales_order__was_delivered=False
+            sales_order__status__in=['pending', 'processing'],
+            sales_order__was_delivered=False,
+            sales_order__branch_origin=obj.branch,
+            sales_order__warehouse_origin=obj.warehouse,
         ).aggregate(total_pending=total_expr)['total_pending'] or 0
     
     def to_representation(self, instance):

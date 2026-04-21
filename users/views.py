@@ -12,6 +12,7 @@ from .serializer import UserSerializer, EmployeeSerializer, SupplierSerializer, 
 from .models import Employee, Supplier
 from rest_framework.permissions import IsAuthenticated
 from core.store.models import Branch
+from core.crm.models import Customer
 from .permissions import IsNotClientPermission
 
 User = get_user_model()
@@ -89,13 +90,42 @@ class EmailExistsAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        try:
-            User.objects.get(email=email)
-            # Email existe, no está disponible
-            return Response(data={'available': False, 'exists': True}, status=status.HTTP_200_OK)
-        except ObjectDoesNotExist:
-            # Email no existe, está disponible
-            return Response(data={'available': True, 'exists': False}, status=status.HTTP_200_OK)
+        # Verificar si existe un usuario con este email
+        user_exists = User.objects.filter(email=email).exists()
+        
+        if user_exists:
+            # Ya existe un usuario con este email
+            return Response(data={
+                'available': False, 
+                'exists': True,
+                'has_user': True,
+                'message': 'Ya existe una cuenta con este email. Por favor, inicia sesión.'
+            }, status=status.HTTP_200_OK)
+        
+        # Verificar si existe un customer sin usuario con este email
+        customer_without_user = Customer.objects.filter(
+            email=email, 
+            user__isnull=True
+        ).exists()
+        
+        if customer_without_user:
+            # Existe un customer sin usuario - puede registrarse y se vinculará automáticamente
+            return Response(data={
+                'available': True, 
+                'exists': False,
+                'has_user': False,
+                'customer_exists': True,
+                'message': 'Puedes crear tu cuenta. Vincularemos tu historial de compras previo.'
+            }, status=status.HTTP_200_OK)
+        
+        # Email completamente disponible
+        return Response(data={
+            'available': True, 
+            'exists': False,
+            'has_user': False,
+            'customer_exists': False,
+            'message': 'Email disponible para registro.'
+        }, status=status.HTTP_200_OK)
 
 
 class VerifyIsClientAPIView(APIView):
@@ -112,7 +142,10 @@ class VerifyIsClientAPIView(APIView):
             'role': user.role
         }
         
-        if user.role == 'client':
+        # Verificar si existe un Customer asociado a este usuario
+        is_customer = Customer.objects.filter(user=user).exists()
+        
+        if is_customer:
             return Response(data={'is_client': True, 'user': user_data}, status=status.HTTP_200_OK)
         else:
             return Response(data={'is_client': False, 'user': user_data}, status=status.HTTP_200_OK)
