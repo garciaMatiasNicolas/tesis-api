@@ -5,3 +5,8 @@ migrations
 __pycache__/
 *.pyc
 .venv
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.pdf
