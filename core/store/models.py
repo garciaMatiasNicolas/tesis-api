@@ -2,9 +2,10 @@ from django.db import models
 from django.utils.text import slugify
 from django.conf import settings
 
-def _upload_to(instance, filename, folder):
-    store_name = slugify(instance.store.name) if instance.store and instance.store.name else "default"
-    return f'storelogos/{store_name}/{filename}'
+def _upload_to(instance, filename):
+    """Ruta para guardar el logo de la tienda: assets/{store_name}/logo/filename"""
+    store_name = slugify(instance.name) if instance.name else "default"
+    return f'assets/{store_name}/logo/{filename}'
 
 class Store(models.Model):
     is_active = models.BooleanField(default=False)

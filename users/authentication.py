@@ -56,21 +56,24 @@ class LoginView(APIView):
         password = request.data.get('password')
         ecommerce = request.data.get('ecommerce', False)
         user = authenticate(email=email, password=password)
-            
+        print(user)
         if user:
+            user = User.objects.get(email=email)  # Obtener el usuario completo para acceder a sus campos
             is_customer = user.role == 'client' and Customer.objects.filter(user=user).exists()
 
-            if is_customer:
-                if ecommerce:
-                    refresh = RefreshToken.for_user(user)
-                    return Response({
-                        "refresh": str(refresh),
-                        "access": str(refresh.access_token),
-                        "user_id": user.id,
-                        "user_name": f'{user.first_name} {user.last_name}',
-                    }, status=200)
-                else:
-                    return Response({"error": "not_authorized"}, status=403)
+            # Si es un cliente haciendo login en ecommerce, no requiere 2FA
+            if is_customer and ecommerce:
+                refresh = RefreshToken.for_user(user)
+                return Response({
+                    "refresh": str(refresh),
+                    "access": str(refresh.access_token),
+                    "user_id": user.id,
+                    "user_name": f'{user.first_name} {user.last_name}',
+                }, status=200)
+            
+            # Si es un cliente pero NO está en ecommerce, no permitir acceso al panel admin
+            if is_customer and not ecommerce:
+                return Response({"error": "not_authorized"}, status=403)
 
             if user.is_2fa_enabled:
                 return Response({

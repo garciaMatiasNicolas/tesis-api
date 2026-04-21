@@ -2,9 +2,10 @@ from rest_framework import serializers
 from decimal import Decimal
 from .models import SalesOrder, SalesItem, PurchaseOrder, PurchaseItem
 from core.crm.models import Customer
-from core.stock.models import Warehouse, Stock
+from core.stock.models import Warehouse, Stock, StockMovement
 from core.store.models import Branch
 from users.models import Supplier, Employee, User
+from django.db.models import Sum, Q
 
 
 class SalesItemSerializer(serializers.ModelSerializer):
@@ -57,6 +58,7 @@ class SalesOrderSerializer(serializers.ModelSerializer):
             'warehouse_origin_id',
             'branch_origin',
             'branch_origin_id',
+            'status',
             'payment_method',
             'delivery',
             'delivery_date',
@@ -115,6 +117,86 @@ class SalesOrderSerializer(serializers.ModelSerializer):
         # Solo validar si estamos creando (no hay instancia) o si se envían los campos en actualización
         is_creation = not self.instance
         
+        # En creación, asegurar que el estado sea draft y was_payed/was_delivered sean False
+        if is_creation:
+            data['status'] = 'draft'
+            data['was_payed'] = False
+            data['was_delivered'] = False
+        
+        # Validaciones de flujo de estado
+        if self.instance:  # Solo en actualización
+            old_status = self.instance.status
+            new_status = data.get('status', old_status)
+            old_was_payed = self.instance.was_payed
+            new_was_payed = data.get('was_payed', old_was_payed)
+            old_was_delivered = self.instance.was_delivered
+            new_was_delivered = data.get('was_delivered', old_was_delivered)
+            
+            # 1) Solo se puede marcar como pagado si el estado es processing
+            if new_was_payed and not old_was_payed:
+                if new_status not in ['processing']:
+                    raise serializers.ValidationError({
+                        'was_payed': 'Solo se puede marcar como pagado una orden en estado de preparación (processing).'
+                    })
+            
+            # 2) Solo se puede marcar como entregado si el estado es processing Y ya está pagado
+            if new_was_delivered and not old_was_delivered:
+                if new_status not in ['processing']:
+                    raise serializers.ValidationError({
+                        'was_delivered': 'Solo se puede marcar como entregado una orden en estado de preparación (processing).'
+                    })
+                # Además, debe estar pagado para poder marcar como entregado
+                if not new_was_payed:
+                    raise serializers.ValidationError({
+                        'was_delivered': 'Solo se puede marcar como entregado una orden que ya ha sido pagada.'
+                    })
+            
+            # 3) Para completar, debe estar pagado y entregado
+            if new_status == 'completed' and old_status != 'completed':
+                if not new_was_payed or not new_was_delivered:
+                    raise serializers.ValidationError({
+                        'status': 'Solo se puede marcar como completada una orden que ha sido pagada y entregada.'
+                    })
+            
+            # 4) No se puede cambiar de completed a otros estados
+            if old_status == 'completed':
+                raise serializers.ValidationError({
+                    'status': 'No se puede cambiar el estado de una orden completada.'
+                })
+            
+            # 5) No se puede cambiar de cancelled a otros estados
+            if old_status == 'cancelled' and new_status != 'cancelled':
+                raise serializers.ValidationError({
+                    'status': 'No se puede cambiar el estado de una orden cancelada.'
+                })
+            
+            # 6) Validar transiciones válidas de estado
+            valid_transitions = {
+                'draft': ['pending', 'cancelled'],
+                'pending': ['processing', 'cancelled'],
+                'processing': ['completed', 'cancelled'],
+                'completed': [],  # No puede cambiar de completed
+                'cancelled': []   # No puede cambiar de cancelled
+            }
+            
+            # 7) No se puede actualizar de presupuesto a pendiente si no hay un origen definido (warehouse o branch)
+            if old_status == 'draft' and new_status == 'pending':
+                warehouse_origin_id = data.get('warehouse_origin_id', self.instance.warehouse_origin_id if self.instance else None)
+                branch_origin_id = data.get('branch_origin_id', self.instance.branch_origin_id if self.instance else None)
+                
+                if not warehouse_origin_id and not branch_origin_id:
+                    raise serializers.ValidationError({
+                        'requires_origin': True,
+                        'status': 'Para cambiar el estado a pendiente, debe especificar un origen de stock.'
+                    })
+                
+            if new_status != old_status:
+                if new_status not in valid_transitions.get(old_status, []):
+                    raise serializers.ValidationError({
+                        'status': f'Transición de estado inválida: {old_status} → {new_status}. '
+                                f'Estados válidos desde {old_status}: {", ".join(valid_transitions.get(old_status, []))}'
+                    })
+        
         # Validate that if delivery is True, deliver_to and shipping_cost are provided
         if 'delivery' in data or is_creation:
             delivery = data.get('delivery', self.instance.delivery if self.instance else False)
@@ -140,6 +222,32 @@ class SalesOrderSerializer(serializers.ModelSerializer):
                 'origin': 'No puede especificar tanto depósito como sucursal de origen. Elija solo uno.'
             })
         
+        # ============ VALIDACIÓN DE STOCK ============
+        # Determinar cuándo necesitamos validar stock
+        need_stock_validation = False
+        
+        if is_creation:
+            # Siempre validar en creación
+            need_stock_validation = True
+        elif self.instance:
+            # En actualización, validar si:
+            old_status = self.instance.status
+            new_status = data.get('status', old_status)
+            
+            # 1. Se cambia de draft a pending (necesita validar stock con el origen)
+            if old_status == 'draft' and new_status == 'pending':
+                need_stock_validation = True
+            
+            # 2. Ya está en pending o superior y se cambia el origen
+            elif old_status in ['pending', 'processing'] and (
+                'warehouse_origin_id' in data or 'branch_origin_id' in data
+            ):
+                need_stock_validation = True
+            
+            # 3. Se están modificando los items de la orden
+            elif 'sales_items' in data:
+                need_stock_validation = True
+        
         # Validate sales_items - solo requerido en creación
         if 'sales_items' in data or is_creation:
             sales_items = data.get('sales_items', [])
@@ -147,11 +255,34 @@ class SalesOrderSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     'sales_items': 'Debe incluir al menos un producto en la orden.'
                 })
-
+        
+        # EJECUTAR VALIDACIÓN DE STOCK SI ES NECESARIO
+        if need_stock_validation:
+            # Obtener los items a validar
+            if 'sales_items' in data:
+                sales_items = data.get('sales_items', [])
+            elif self.instance:
+                # Usar los items existentes de la instancia
+                sales_items = [
+                    {
+                        'product': item.product,
+                        'quantity': item.quantity,
+                        'product_unit': item.product_unit
+                    }
+                    for item in self.instance.sales_items.all()
+                ]
+            else:
+                sales_items = []
+            
+            if not sales_items:
+                raise serializers.ValidationError({
+                    'sales_items': 'No se pueden validar items sin productos en la orden.'
+                })
+            
             # Determinar el origen del stock
             request = self.context.get('request')
             user = User.objects.get(id=self.context.get('request').user.id) if request else None
-            print(request.data)
+            
             # Determinar ubicación de origen (warehouse o branch)
             origin_warehouse = None
             origin_branch = None
@@ -175,9 +306,9 @@ class SalesOrderSerializer(serializers.ModelSerializer):
                 origin_specified_manually = True
             else:
                 # Si no se especifica origen, intentar usar la sucursal del empleado
-                if user.role != "superadmin":
-                    employee = Employee.objects.get(user=request.user.id) if request else None
-                    origin_branch = employee.branch
+                if user and user.role != "superadmin":
+                    employee = Employee.objects.filter(user=request.user.id).first() if request else None
+                    origin_branch = employee.branch if employee else None
                 else:
                     origin_branch = Branch.objects.filter(
                         name__icontains='Sucursal Principal'
@@ -190,7 +321,7 @@ class SalesOrderSerializer(serializers.ModelSerializer):
                     ).first() or Branch.objects.filter(store=employee.store).first()
 
                 # Si encontramos la sucursal del empleado, asignarla automáticamente
-                if origin_branch:
+                if origin_branch and not self.instance:
                     data['branch_origin_id'] = origin_branch.id
 
             # Calcular cantidades requeridas por producto
@@ -205,12 +336,29 @@ class SalesOrderSerializer(serializers.ModelSerializer):
                 if not product:
                     continue
 
+                # Manejar tanto objetos Product como IDs simples
                 product_id = product.id if hasattr(product, 'id') else product
-                products_by_id[product_id] = product
+                
+                # Guardar referencia al producto para mensajes de error
+                if hasattr(product, 'description'):
+                    products_by_id[product_id] = product
+                else:
+                    # Si solo tenemos el ID, obtener el producto de la BD
+                    from core.stock.models import Product
+                    product_obj = Product.objects.filter(id=product_id).first()
+                    if product_obj:
+                        products_by_id[product_id] = product_obj
 
                 conversion_factor = Decimal('1')
-                if product_unit and hasattr(product_unit, 'conversion_factor'):
-                    conversion_factor = Decimal(str(product_unit.conversion_factor))
+                if product_unit:
+                    if hasattr(product_unit, 'conversion_factor'):
+                        conversion_factor = Decimal(str(product_unit.conversion_factor))
+                    else:
+                        # Si product_unit es un ID, obtenerlo de la BD
+                        from core.stock.models import ProductUnit
+                        unit_obj = ProductUnit.objects.filter(id=product_unit).first()
+                        if unit_obj:
+                            conversion_factor = Decimal(str(unit_obj.conversion_factor))
 
                 real_quantity = Decimal(str(quantity)) * conversion_factor
 
@@ -220,80 +368,195 @@ class SalesOrderSerializer(serializers.ModelSerializer):
             if origin_warehouse or origin_branch:
                 # Validar stock en la ubicación de origen
                 stock_errors = []
+                stock_inconsistencies = []  # Para tracking de inconsistencias entre ubicaciones
+                
                 for product_id, required_qty in requested_by_product.items():
-                    # Obtener stock en la ubicación de origen
+
+                    # 1. Obtener stock físico
                     if origin_warehouse:
-                        origin_qty = Stock.objects.filter(
+                        stock_obj = Stock.objects.filter(
                             product_id=product_id,
                             warehouse=origin_warehouse,
                             branch=None
-                        ).values_list('quantity', flat=True).first() or Decimal('0')
+                        ).first()
                         origin_location_name = f"Depósito {origin_warehouse.name}"
+                        origin_type = 'warehouse'
+                        origin_id = origin_warehouse.id
                     else:
-                        origin_qty = Stock.objects.filter(
+                        stock_obj = Stock.objects.filter(
                             product_id=product_id,
                             branch=origin_branch,
                             warehouse=None
-                        ).values_list('quantity', flat=True).first() or Decimal('0')
+                        ).first()
                         origin_location_name = f"Sucursal {origin_branch.name}"
-
-                    if Decimal(str(origin_qty)) < required_qty:
+                        origin_type = 'branch'
+                        origin_id = origin_branch.id
+                    
+                    physical_stock = stock_obj.quantity if stock_obj else Decimal('0')
+                    
+                    # 2. Calcular ventas reservadas (movimientos OUT en TRAN)
+                    reserved_sales = StockMovement.objects.filter(
+                        product_id=product_id,
+                        movement_type='OUT',
+                        status='TRAN'
+                    )
+                    
+                    if origin_warehouse:
+                        reserved_sales = reserved_sales.filter(warehouse=origin_warehouse, branch=None)
+                    else:
+                        reserved_sales = reserved_sales.filter(branch=origin_branch, warehouse=None)
+                    
+                    # Si estamos actualizando una orden, excluir sus propios movimientos
+                    if self.instance:
+                        reserved_sales = reserved_sales.exclude(sale=self.instance)
+                    
+                    total_reserved = reserved_sales.aggregate(total=Sum('quantity'))['total'] or Decimal('0')
+                    
+                    # 3. Calcular compras en tránsito (movimientos IN en TRAN)
+                    incoming_purchases = StockMovement.objects.filter(
+                        product_id=product_id,
+                        movement_type='IN',
+                        status='TRAN'
+                    )
+                    if origin_warehouse:
+                        incoming_purchases = incoming_purchases.filter(warehouse=origin_warehouse, branch=None)
+                    else:
+                        incoming_purchases = incoming_purchases.filter(branch=origin_branch, warehouse=None)
+                    
+                    total_incoming = incoming_purchases.aggregate(total=Sum('quantity'))['total'] or Decimal('0')
+                    
+                    # 4. Calcular stock disponible real
+                    available_stock = physical_stock - total_reserved + total_incoming
+                    
+                    # 5. Validar disponibilidad
+                    if available_stock < required_qty:
                         # Buscar stock en otras ubicaciones
                         other_locations = Stock.objects.filter(
                             product_id=product_id,
                             quantity__gt=0
+                        ).exclude(
+                            Q(warehouse=origin_warehouse, branch=None) if origin_warehouse else Q(branch=origin_branch, warehouse=None)
                         )
-                        
-                        if origin_warehouse:
-                            other_locations = other_locations.exclude(warehouse=origin_warehouse)
-                        else:
-                            other_locations = other_locations.exclude(branch=origin_branch, warehouse=None)
 
                         other_info = []
+                        alternative_locations = []  # Para información estructurada
+                        
                         for stock in other_locations:
-                            if stock.branch:
-                                location_name = f"Sucursal '{stock.branch.name}' (ID: {stock.branch.id})"
-                                other_info.append(f"{location_name}: {stock.quantity} unidades")
-                            elif stock.warehouse:
-                                location_name = f"Depósito '{stock.warehouse.name}' (ID: {stock.warehouse.id})"
-                                other_info.append(f"{location_name}: {stock.quantity} unidades")
+                            # Calcular disponibilidad real en esta ubicación
+                            loc_physical = stock.quantity
+                            
+                            # Reservas en esta ubicación
+                            loc_reserved = StockMovement.objects.filter(
+                                product_id=product_id,
+                                movement_type='OUT',
+                                status='TRAN'
+                            )
+                            if stock.warehouse:
+                                loc_reserved = loc_reserved.filter(warehouse=stock.warehouse, branch=None)
+                                location_label = f"Depósito '{stock.warehouse.name}' (ID: {stock.warehouse.id})"
+                                loc_type = 'warehouse'
+                                loc_id = stock.warehouse.id
+                                loc_name = stock.warehouse.name
+                            else:
+                                loc_reserved = loc_reserved.filter(branch=stock.branch, warehouse=None)
+                                location_label = f"Sucursal '{stock.branch.name}' (ID: {stock.branch.id})"
+                                loc_type = 'branch'
+                                loc_id = stock.branch.id
+                                loc_name = stock.branch.name
+                            
+                            loc_total_reserved = loc_reserved.aggregate(total=Sum('quantity'))['total'] or Decimal('0')
+                            
+                            # Compras en tránsito en esta ubicación
+                            loc_incoming = StockMovement.objects.filter(
+                                product_id=product_id,
+                                movement_type='IN',
+                                status='TRAN'
+                            )
+                            if stock.warehouse:
+                                loc_incoming = loc_incoming.filter(warehouse=stock.warehouse, branch=None)
+                            else:
+                                loc_incoming = loc_incoming.filter(branch=stock.branch, warehouse=None)
+                            
+                            loc_total_incoming = loc_incoming.aggregate(total=Sum('quantity'))['total'] or Decimal('0')
+                            
+                            # Disponibilidad real
+                            loc_available = round(loc_physical - loc_total_reserved + loc_total_incoming)
+                            
+                            # Solo agregar si hay stock disponible real
+                            if loc_available > 0:
+                                other_info.append(f"{location_label}: {loc_available} unidades disponibles")
+                                alternative_locations.append({
+                                    'type': loc_type,
+                                    'id': loc_id,
+                                    'name': loc_name,
+                                    'available': float(loc_available)
+                                })
 
                         product_name = getattr(products_by_id.get(product_id), 'description', f"Producto {product_id}")
+                        product_sku = getattr(products_by_id.get(product_id), 'sku', '')
                         
-                        # Si el origen fue especificado manualmente, error más directo
+                        # Si hay stock en otras ubicaciones, guardar la inconsistencia
+                        if alternative_locations and origin_specified_manually:
+                            stock_inconsistencies.append({
+                                'product_id': product_id,
+                                'product_name': product_name,
+                                'product_sku': product_sku,
+                                'required_qty': float(required_qty),
+                                'current_origin': {
+                                    'type': origin_type,
+                                    'id': origin_id,
+                                    'name': origin_warehouse.name if origin_warehouse else origin_branch.name,
+                                    'available': float(available_stock)
+                                },
+                                'alternative_locations': alternative_locations
+                            })
+                        
+                        # Mensaje de error detallado
                         if origin_specified_manually:
+                            error_msg = (
+                                f"Stock insuficiente en {origin_location_name} para '{product_name}': "
+                                f"Requerido: {round(required_qty)}, "
+                                f"Físico: {round(physical_stock)}, "
+                                f"Reservado en ventas: {round(total_reserved)}, "
+                                f"En tránsito (compras): {round(total_incoming)}, "
+                                f"Disponible: {round(available_stock)}."
+                            )
                             if other_info:
-                                stock_errors.append(
-                                    f"Stock insuficiente en {origin_location_name} para '{product_name}' "
-                                    f"(requerido: {required_qty}, disponible: {origin_qty}). "
-                                    f"Stock en otras ubicaciones: {'; '.join(other_info)}."
-                                )
+                                error_msg += f" Stock en otras ubicaciones: {'; '.join(other_info)}."
                             else:
-                                stock_errors.append(
-                                    f"Stock insuficiente en {origin_location_name} para '{product_name}' "
-                                    f"(requerido: {required_qty}, disponible: {origin_qty}). "
-                                    f"No hay stock disponible en otras ubicaciones."
-                                )
+                                error_msg += " No hay stock disponible en otras ubicaciones."
                         else:
-                            # Origen automático (sucursal del empleado) - sugerir alternativas
+                            # Origen automático - sugerir alternativas
+                            error_msg = (
+                                f"Stock insuficiente en {origin_location_name} para '{product_name}': "
+                                f"Requerido: {round(required_qty)}, "
+                                f"Físico: {round(physical_stock)}, "
+                                f"Reservado: {round(total_reserved)}, "
+                                f"En tránsito: {round(total_incoming)}, "
+                                f"Disponible: {round(available_stock)}."
+                            )
                             if other_info:
-                                stock_errors.append(
-                                    f"Stock insuficiente en {origin_location_name} para '{product_name}' "
-                                    f"(requerido: {required_qty}, disponible: {origin_qty}). "
-                                    f"Stock disponible en otras ubicaciones: {'; '.join(other_info)}. "
-                                    f"Especifique 'branch_origin_id' o 'warehouse_origin_id' para tomar stock de otra ubicación."
+                                error_msg += (
+                                    f" Stock disponible en otras ubicaciones: {'; '.join(other_info)}. "
+                                    f"Especifique 'branch_origin_id' o 'warehouse_origin_id' para usar otra ubicación."
                                 )
                             else:
-                                stock_errors.append(
-                                    f"Stock insuficiente en {origin_location_name} para '{product_name}' "
-                                    f"(requerido: {required_qty}, disponible: {origin_qty}). "
-                                    f"No hay stock disponible en otras ubicaciones."
-                                )
+                                error_msg += " No hay stock disponible en otras ubicaciones."
+                        
+                        stock_errors.append(error_msg)
 
                 if stock_errors:
-                    raise serializers.ValidationError({
-                        'sales_items': stock_errors
-                    })
+                    # Si hay inconsistencias de ubicación, incluir información estructurada
+                    if stock_inconsistencies:
+                        raise serializers.ValidationError({
+                            'stock_inconsistency': True,
+                            'inconsistency_details': stock_inconsistencies,
+                            'sales_items': stock_errors
+                        })
+                    else:
+                        raise serializers.ValidationError({
+                            'sales_items': stock_errors
+                        })
             else:
                 # No se pudo determinar origen automáticamente y no fue especificado manualmente
                 raise serializers.ValidationError({
@@ -340,7 +603,7 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
     supplier_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
     warehouse_destination_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
     branch_destination_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
-    comment = serializers.CharField(write_only=True, required=False, allow_blank=False)
+    comment = serializers.CharField(write_only=True, required=False, allow_blank=True)
     
     class Meta:
         model = PurchaseOrder
@@ -413,12 +676,19 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
         return instance
     
     def validate(self, data):
-        # Solo validar items si están siendo actualizados
-        # Esto permite PATCH sin items (ej: solo cambiar status)
-
-        if 'items' in data:
+        # Solo validar si estamos creando (no hay instancia) o si se envían los campos en actualización
+        is_creation = not self.instance
+        
+        # En creación, asegurar que el estado sea draft y was_payed/received sean False
+        if is_creation:
+            data['status'] = 'draft'
+            data['was_payed'] = False
+            data['received'] = False
+        
+        # Solo validar items si están siendo actualizados o en creación
+        if 'items' in data or is_creation:
             items = data.get('items', [])
-            if not items:
+            if not items and is_creation:
                 raise serializers.ValidationError({
                     'items': 'Debe incluir al menos un producto en la orden de compra.'
                 })
@@ -432,33 +702,75 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
         
         # Validaciones de flujo de estado
         if self.instance:  # Solo en actualización
-            comment = data.get('comment')
-            if not comment or not str(comment).strip():
-                raise serializers.ValidationError({
-                    'comment': 'Debe incluir un comentario de actualización.'
-                })
+            # Los comentarios son opcionales
             old_status = self.instance.status
             new_status = data.get('status', old_status)
+            old_was_payed = self.instance.was_payed
+            new_was_payed = data.get('was_payed', old_was_payed)
+            old_received = self.instance.received
+            new_received = data.get('received', old_received)
             
-            # 1) El estado no puede volver de aprobado o rechazado a pendiente
-            if old_status in ['approved', 'rejected'] and new_status == 'pending':
+            # 1) Solo se puede marcar como pagado si el estado es pending
+            if new_was_payed and not old_was_payed:
+                if new_status not in ['pending']:
+                    raise serializers.ValidationError({
+                        'was_payed': 'Solo se puede marcar como pagado una orden pendiente (pending).'
+                    })
+            
+            # 2) Solo se puede marcar como recibido si el estado es pending Y ya está pagado
+            if new_received and not old_received:
+                if new_status not in ['pending']:
+                    raise serializers.ValidationError({
+                        'received': 'Solo se puede marcar como recibido una orden pendiente (pending).'
+                    })
+                # Además, debe estar pagado para poder marcar como recibido
+                if not new_was_payed:
+                    raise serializers.ValidationError({
+                        'received': 'No se puede marcar como recibido una orden que no está pagada.'
+                    })
+            
+            # 3) Para completar, debe estar pagado y recibido
+            if new_status == 'completed' and old_status != 'completed':
+                if not new_was_payed or not new_received:
+                    raise serializers.ValidationError({
+                        'status': 'Para completar la orden, debe estar pagada y recibida.'
+                    })
+            
+            # 4) No se puede cambiar de completed a otros estados
+            if old_status == 'completed':
                 raise serializers.ValidationError({
-                    'status': 'No se puede cambiar el estado de aprobado o rechazado a pendiente.'
+                    'status': 'No se puede cambiar el estado de una orden completada.'
                 })
             
-            # 2) No se puede marcar como pagado si no está aprobado
-            new_was_payed = data.get('was_payed', self.instance.was_payed)
-            if new_was_payed and new_status != 'approved':
+            # 5) No se puede cambiar de cancelled a otros estados
+            if old_status == 'cancelled' and new_status != 'cancelled':
                 raise serializers.ValidationError({
-                    'was_payed': 'No se puede marcar como pagado una orden que no está aprobada.'
+                    'status': 'No se puede cambiar el estado de una orden cancelada.'
                 })
             
-            # 3) No se puede marcar como recibido si no está pagado
-            new_received = data.get('received', self.instance.received)
-            if new_received and not new_was_payed:
-                raise serializers.ValidationError({
-                    'received': 'No se puede marcar como recibido una orden que no está pagada.'
-                })
+            # 6) Validar transiciones válidas de estado
+            valid_transitions = {
+                'draft': ['pending', 'cancelled'],
+                'pending': ['completed', 'cancelled'],
+                'completed': [],  # No puede cambiar de completed
+                'cancelled': []   # No puede cambiar de cancelled
+            }
+            
+            # 7) No se puede actualizar de presupuesto a pendiente si no hay un destino definido (warehouse o branch)
+            if old_status == 'draft' and new_status == 'pending':
+                warehouse_destination_id = data.get('warehouse_destination_id', self.instance.warehouse_destination_id if self.instance else None)
+                branch_destination_id = data.get('branch_destination_id', self.instance.branch_destination_id if self.instance else None)
+                
+                if not warehouse_destination_id and not branch_destination_id:
+                    raise serializers.ValidationError({
+                        'status': 'Debe especificar un destino (warehouse o branch) antes de pasar a pendiente.'
+                    })
+                
+            if new_status != old_status:
+                if new_status not in valid_transitions.get(old_status, []):
+                    raise serializers.ValidationError({
+                        'status': f'No se puede cambiar de {old_status} a {new_status}. Transiciones válidas: {", ".join(valid_transitions.get(old_status, []))}'
+                    })
         
         # Validar que solo haya un destino (warehouse O branch)
         warehouse_destination_id = data.get('warehouse_destination_id', self.instance.warehouse_destination_id if self.instance else None)

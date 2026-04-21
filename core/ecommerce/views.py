@@ -13,7 +13,7 @@ from core.crm.models import Customer
 from .serializer import (
     ProductSerializer, CategorySerializer, SubcategorySerializer,
     CartSerializer, CartItemSerializer, SalesOrderSerializer, SalesItemSerializer,
-    CustomerSerializer
+    CustomerSerializer, CustomerRegistrationSerializer
 )
 from users.models import Supplier
 from users.serializer import SupplierSerializer
@@ -148,7 +148,7 @@ class ProductDetail(APIView):
     def get(self, request, pk):
         try:
             product = Product.objects.get(pk=pk)
-            serializer = ProductSerializer(product)
+            serializer = ProductSerializer(product, context={'request': request})
             return Response(serializer.data)
         except Product.DoesNotExist:
             return Response(
@@ -468,7 +468,9 @@ class CheckoutCart(APIView):
         # Calcular total final
         total_price = subtotal + shipping_cost + taxes - discount
         
-        # Crear orden de venta
+        # Crear orden de venta como DRAFT (presupuesto)
+        # El status 'draft' NO genera movimiento ni reserva de stock
+        # Solo cuando cambia a 'pending' se reserva el stock
         sales_order = SalesOrder.objects.create(
             customer=cart.customer,
             sales_channel='ecommerce',
@@ -480,7 +482,7 @@ class CheckoutCart(APIView):
             taxes=taxes,
             discount=discount,
             description=description,
-            status='pending'
+            status='draft'  # Presupuesto - sin reserva de stock
         )
         
         # Transferir items del carrito a la orden
@@ -488,7 +490,8 @@ class CheckoutCart(APIView):
             SalesItem.objects.create(
                 sales_order=sales_order,
                 product=cart_item.product,
-                quantity=cart_item.quantity
+                quantity=cart_item.quantity,
+                unit_price=cart_item.product.price
             )
         
         # Actualizar relación del carrito con la orden
@@ -497,4 +500,45 @@ class CheckoutCart(APIView):
         
         serializer = SalesOrderSerializer(sales_order)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class CustomerRegistration(APIView):
+    """
+    API para registro de clientes del ecommerce.
+    Maneja automáticamente la vinculación con clientes existentes creados desde CRM.
+    """
+    permission_classes = [AllowAny]
+    
+    def post(self, request):
+        """
+        Registrar un nuevo cliente para el ecommerce.
+        Si el email ya existe en la tabla Customer pero sin usuario,
+        crea el usuario y lo vincula automáticamente.
+        """
+        serializer = CustomerRegistrationSerializer(data=request.data)
+        
+        if serializer.is_valid():
+            result = serializer.save()
+            
+            return Response({
+                "message": result['message'],
+                "user_id": result['user'].id,
+                "customer_id": result['customer'].id,
+                "linked_to_existing": result['linked_to_existing'],
+                "user": {
+                    "email": result['user'].email,
+                    "first_name": result['user'].first_name,
+                    "last_name": result['user'].last_name
+                },
+                "customer": {
+                    "id": result['customer'].id,
+                    "email": result['customer'].email,
+                    "first_name": result['customer'].first_name,
+                    "last_name": result['customer'].last_name,
+                    "phone": result['customer'].phone,
+                    "total_spent": str(result['customer'].total_spent) if result['linked_to_existing'] else "0"
+                }
+            }, status=status.HTTP_201_CREATED)
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     

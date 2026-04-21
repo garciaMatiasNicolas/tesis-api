@@ -1,7 +1,37 @@
 import datetime
+import os
 from django.db import models
 from core.store.models import Store, Branch
 from users.models import Supplier
+
+
+def product_image_upload_path(instance, filename, slot='image_1'):
+    """
+    Retorna la ruta donde se guardará la imagen del producto.
+    Formato: images/{store}/{sku}/image_1.jpg
+    """
+    # Obtener extensión del archivo
+    ext = os.path.splitext(filename)[1]
+    # Por defecto usar 'default_store' si no hay store asociado
+    store_name = Store.objects.filter(is_active=True).first().slug if Store.objects.filter(is_active=True).exists() else "default_store"
+    # Construir nombre de archivo basado en el slot
+    filename = f"{slot}{ext}"
+    return f'assets/{store_name}/{instance.sku}/{filename}'
+
+
+def product_image_1_path(instance, filename):
+    """Ruta para image_1"""
+    return product_image_upload_path(instance, filename, 'image_1')
+
+
+def product_image_2_path(instance, filename):
+    """Ruta para image_2"""
+    return product_image_upload_path(instance, filename, 'image_2')
+
+
+def product_image_3_path(instance, filename):
+    """Ruta para image_3"""
+    return product_image_upload_path(instance, filename, 'image_3')
 
 
 class Category(models.Model):
@@ -23,11 +53,6 @@ class Subcategory(models.Model):
 
     def __str__(self):
         return self.name
-
-
-def product_image_upload_path(instance, filename):
-    """Función para definir la ruta donde se guardarán las imágenes de productos"""
-    return f'products/{instance.sku}/{filename}'
 
 
 class Product(models.Model):
@@ -64,13 +89,37 @@ class Product(models.Model):
     safety_stock = models.DecimalField(max_digits=15, decimal_places=4, default=0.0000)
     width = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     cost_price = models.DecimalField(max_digits=10, decimal_places=2)
-    image = models.ImageField(upload_to=product_image_upload_path, null=True, blank=True)
+    
+    # Imágenes del producto (hasta 3)
+    image_1 = models.ImageField(upload_to=product_image_1_path, blank=True, null=True)
+    image_2 = models.ImageField(upload_to=product_image_2_path, blank=True, null=True)
+    image_3 = models.ImageField(upload_to=product_image_3_path, blank=True, null=True)
+    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     status = models.CharField(max_length=15, choices=STATUS_CHOICES, default='active')
 
     def __str__(self):
         return f"{self.sku} - {self.description}"
+    
+    def get_image_folder(self, store_name="default_store"):
+        """
+        Retorna la ruta de carpeta local para las imágenes de este producto.
+        Formato: images/{store}/{sku}/
+        """
+        return f"images/{store_name}/{self.sku}"
+    
+    @property
+    def images(self):
+        """Retorna lista de URLs de imágenes disponibles"""
+        images = []
+        if self.image_1:
+            images.append(self.image_1.url)
+        if self.image_2:
+            images.append(self.image_2.url)
+        if self.image_3:
+            images.append(self.image_3.url)
+        return images
 
 
 class ProductUnit(models.Model):

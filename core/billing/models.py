@@ -13,17 +13,20 @@ def _upload_to(instance, filename):
 
 
 class PurchaseOrder(models.Model):
+    STATUS_CHOICES = [
+        ('draft', 'Presupuesto'),
+        ('pending', 'Pendiente'),
+        ('completed', 'Completada'),
+        ('cancelled', 'Cancelada'),
+    ]
+    
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     supplier = models.ForeignKey(Supplier, on_delete=models.SET_NULL, null=True, blank=True)
     payment_method = models.CharField(max_length=150)
     delivery_date = models.DateField(null=False, blank=False)
     total_price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     description = models.TextField(null=True, blank=True)
-    status = models.CharField(max_length=20, choices=[
-        ('pending', 'Pendiente'),
-        ('approved', 'Aprobado'),
-        ('rejected', 'Rechazado')
-    ], default='pending')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft')
     was_payed = models.BooleanField(default=False)
     received = models.BooleanField(default=False)
     received_date = models.DateField(null=True, blank=True)
