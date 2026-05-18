@@ -107,24 +107,47 @@ POST /api/users/auth/enable-2fa/     # Activación 2FA
 
 ### setup_company.py
 Comando personalizado para configuración inicial de empresas en el sistema multi-tenant. 
-Primero debemos verificar que en nuestra base de datos este creado el schema public, y corremos
-```bash
-python manage.py makemigrations main
-python manage.py migrate_schemas --schema=public
-```
-Una vez creada nuestro schema public donde guardaremos el tenantcy, podremos correr el comando para setear un nuevo tenant (compañia) 
 
-**Uso**:
+#### Setup desde cero (base de datos vacía)
 ```bash
-python manage.py setup_company "Empresa Demo" empresa_demo empresa.localhost admin@empresa.com password123
+python manage.py setup_company "Empresa Demo" empresa_demo empresa.localhost admin@empresa.com password123 --initial
+```
+
+El flag `--initial` ejecuta:
+1. `makemigrations` de todas las apps
+2. `migrate_schemas --schema=public` para crear tablas compartidas
+3. Crea el tenant, dominio y schema
+4. Migra el schema del tenant
+5. Crea superusuario
+6. Crea tienda y sucursal
+
+#### Crear empresa adicional (sin --initial)
+```bash
+python manage.py setup_company "Segunda Empresa" empresa2 empresa2.localhost admin@empresa2.com pass456
 ```
 
 **Funcionalidades**:
 1. Creación de tenant (esquema de base de datos)
 2. Configuración de dominio
-3. Migraciones automáticas
-4. Creación de superusuario
-5. Configuración de tienda y sucursal principal
+3. Creación de schema PostgreSQL
+4. Migraciones del tenant
+5. Creación de superusuario
+6. Configuración de tienda y sucursal principal
+
+### load_data.py
+Comando para importar datos masivos desde Excel.
+
+```bash
+python manage.py load_data "ruta/al/archivo.xlsx" schema_name
+```
+
+**Ver documentación completa**: [DATA_IMPORT.md](./DATA_IMPORT.md)
+
+**Características**:
+- Carga datos desde múltiples hojas de Excel
+- Respeta dependencias entre modelos
+- Omite hojas vacías automáticamente
+- Provee logging detallado del proceso
 
 ## 🔒 Sistema de Permisos
 

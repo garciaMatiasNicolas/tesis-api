@@ -78,10 +78,6 @@ class ProductSerializer(serializers.ModelSerializer):
             "subcategory": {"id": instance.subcategory.id, "name": instance.subcategory.name} if instance.subcategory else None,
             "supplier": {"id": instance.supplier.id, "name": instance.supplier.name} if instance.supplier else None,
             "sku": instance.sku,
-            "weight": instance.weight,
-            "height": instance.height,
-            "depth": instance.depth,
-            "width": instance.width,
             "cost_price": instance.cost_price,
             "safety_stock": float(instance.safety_stock.normalize()) if instance.safety_stock else 0.0,
             "base_unit_name": instance.base_unit_name,
@@ -108,7 +104,11 @@ class ProductUnitSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         return {
             "id": instance.id,
-            "product": instance.product.id if instance.product else None,
+            "product": {
+                "id": instance.product.id,
+                "description": instance.product.description ,
+                "sku": instance.product.sku  
+            } if instance.product else None,
             "name": instance.name,
             "conversion_factor": float(instance.conversion_factor.normalize()),
         }

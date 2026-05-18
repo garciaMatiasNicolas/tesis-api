@@ -60,7 +60,8 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def get_totp_uri(self):
         schema = getattr(connection, "schema_name", "public")
-        return f"otpauth://totp/MatiasApp:{self.email}?secret={self.otp_secret}&issuer=MatiasApp"
+        app_name = f"Arkhos - {schema}"
+        return f"otpauth://totp/{app_name}:{self.email}?secret={self.otp_secret}&issuer={app_name}"
 
     def verify_otp(self, token):
         totp = pyotp.TOTP(self.otp_secret)

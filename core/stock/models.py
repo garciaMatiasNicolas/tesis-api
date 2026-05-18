@@ -83,11 +83,7 @@ class Product(models.Model):
     sku = models.CharField(max_length=100, unique=True)
     description = models.TextField()
     price = models.DecimalField(max_digits=10, decimal_places=2)
-    weight = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    height = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    depth = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     safety_stock = models.DecimalField(max_digits=15, decimal_places=4, default=0.0000)
-    width = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     cost_price = models.DecimalField(max_digits=10, decimal_places=2)
     
     # Imágenes del producto (hasta 3)
@@ -177,6 +173,7 @@ class StockMovement(models.Model):
     MOVEMENT_TYPE_CHOICES = [
         ('IN', 'Ingreso'),
         ('OUT', 'Egreso'),
+        ('ADJ', 'Ajuste'),
     ]
 
     FROM_TO_CHOICES = [

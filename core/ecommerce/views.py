@@ -1,9 +1,11 @@
+from django.db import models
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.pagination import PageNumberPagination
-from django.db.models import Q
+from django.db.models import Q, Value, Sum
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from decimal import Decimal
 from ..stock.models import Product, Category, Subcategory
@@ -24,7 +26,7 @@ from users.permissions import IsNotClientPermission
 
 
 class ProductPagination(PageNumberPagination):
-    page_size = 12
+    page_size = 4
     page_size_query_param = 'page_size'
     max_page_size = 100
 
@@ -36,11 +38,18 @@ class ProductList(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        products = Product.objects.all()
+        products = Product.objects.annotate(
+            total_stock=Coalesce(
+                Sum('stocks__quantity'), 
+                Value(0),
+                output_field=models.DecimalField()
+            )
+        )
         
         # Filtros
         category_id = request.query_params.get('category', None)
         subcategory_id = request.query_params.get('subcategory', None)
+        supplier_id = request.query_params.get('supplier', None)
         search = request.query_params.get('search', None)
         min_price = request.query_params.get('min_price', None)
         max_price = request.query_params.get('max_price', None)
@@ -52,6 +61,9 @@ class ProductList(APIView):
             
         if subcategory_id:
             products = products.filter(subcategory_id=subcategory_id)
+        
+        if supplier_id:
+            products = products.filter(supplier_id=supplier_id)
             
         if search:
             products = products.filter(
@@ -73,19 +85,20 @@ class ProductList(APIView):
         
         # Ordenamiento
         if sort_by == 'price_asc':
-            products = products.order_by('price')
+            sort = 'price'
         elif sort_by == 'price_desc':
-            products = products.order_by('-price')
+            sort = '-price'
         elif sort_by == 'name_asc':
-            products = products.order_by('description')
+            sort = 'description'
         elif sort_by == 'name_desc':
-            products = products.order_by('-description')
+            sort = '-description'
         elif sort_by == 'newest':
-            products = products.order_by('-created_at')
+            sort = '-created_at'
         else:
-            products = products.order_by('-created_at')  # Por defecto más nuevos primero
+            sort = '-total_stock' # Por defecto más nuevos primero
         
         # Paginación
+        products = products.order_by(sort)
         paginator = ProductPagination()
         page = paginator.paginate_queryset(products, request)
         

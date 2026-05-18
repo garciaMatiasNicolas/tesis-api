@@ -76,7 +76,6 @@ class StoreViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-
     @action(detail=True, methods=['get'])
     def branches(self, request, pk=None):
         """Obtener todas las sucursales de una tienda"""

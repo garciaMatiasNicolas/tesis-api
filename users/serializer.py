@@ -23,6 +23,10 @@ class UserSerializer(serializers.ModelSerializer):
             'password'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'is_active', 'is_staff']
+        extra_kwargs = {
+            'password': {'write_only': True, 'required': False},
+            'role': {'required': False}
+        }
 
     def validate_email(self, value):
         if not value:
@@ -46,6 +50,12 @@ class UserSerializer(serializers.ModelSerializer):
         return value
     
     def create(self, validated_data):
+        # Para creación, password y role son requeridos
+        if 'password' not in validated_data:
+            raise serializers.ValidationError({'password': 'Este campo es requerido para crear un usuario'})
+        if 'role' not in validated_data:
+            raise serializers.ValidationError({'role': 'Este campo es requerido para crear un usuario'})
+            
         user = User.objects.create_user(
             email=validated_data['email'],
             first_name=validated_data['first_name'],
@@ -65,6 +75,23 @@ class UserSerializer(serializers.ModelSerializer):
     
 
         return user
+    
+    def update(self, instance, validated_data):
+        # Actualización parcial - password y role son opcionales
+        instance.first_name = validated_data.get('first_name', instance.first_name)
+        instance.last_name = validated_data.get('last_name', instance.last_name)
+        instance.email = validated_data.get('email', instance.email)
+        
+        # Solo actualizar role si se proporciona
+        if 'role' in validated_data:
+            instance.role = validated_data['role']
+        
+        # Solo actualizar password si se proporciona
+        if 'password' in validated_data:
+            instance.set_password(validated_data['password'])
+        
+        instance.save()
+        return instance
 
 
 class EmployeeSerializer(serializers.ModelSerializer):

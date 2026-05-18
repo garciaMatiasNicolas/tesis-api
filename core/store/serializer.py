@@ -1,3 +1,5 @@
+import os
+
 from rest_framework import serializers
 from .models import Store, Branch
 from users.models import User
@@ -232,8 +234,16 @@ class StoreSerializer(serializers.ModelSerializer):
 
         # Guardar los valores anteriores para comparar
         old_values = {field: getattr(instance, field) for field in sync_fields}
-        
+        old_logo = instance.logo
+
         # Actualizar la tienda
+        if old_logo and 'logo' in validated_data and old_logo != validated_data['logo']:
+            # Si el logo está siendo actualizado, eliminar el archivo anterior
+            try:
+                os.remove(old_logo.path)
+            except:
+                pass  # Si ocurre un error al eliminar el archivo, continuar de todas formas
+
         updated_store = super().update(instance, validated_data)
         
         # Sincronizar con la sucursal principal si algún campo cambió
