@@ -10,7 +10,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-56+af()i@zv6_=_78klvx0o3ij36@sv!494u(i-4_u)@s1*36!'
 DEBUG = True
 
-ALLOWED_HOSTS = ['.localhost', '127.0.0.1']
+ALLOWED_HOSTS = ['.localhost', '127.0.0.1' '.casta1994.com.ar', 'api.casta1994.com.ar']
 
 
 SHARED_APPS = [
