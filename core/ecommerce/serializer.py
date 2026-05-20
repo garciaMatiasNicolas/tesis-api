@@ -71,7 +71,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "price": instance.price,
             "category": {"id": instance.category.id, "name": instance.category.name} if instance.category else None,
             "subcategory": {"id": instance.subcategory.id, "name": instance.subcategory.name} if instance.subcategory else None,
-            "supplier": {"id": instance.supplier.id, "name": instance.supplier.name} if instance.supplier else None,
+            "supplier": {"id": instance.supplier.id, "name": instance.supplier.fantasy_name} if instance.supplier else None,
             "sku": instance.sku,
             "created_at": instance.created_at,
             "updated_at": instance.updated_at,

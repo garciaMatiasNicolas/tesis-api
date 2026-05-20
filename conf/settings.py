@@ -7,10 +7,10 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = 'django-insecure-56+af()i@zv6_=_78klvx0o3ij36@sv!494u(i-4_u)@s1*36!'
-DEBUG = True
+SECRET_KEY = os.getenv('SECRET_KEY')
+DEBUG = os.getenv("DEBUG")
 
-ALLOWED_HOSTS = ['.localhost', '127.0.0.1' '.casta1994.com.ar', 'api.casta1994.com.ar']
+ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "").split(",")
 
 
 SHARED_APPS = [
@@ -40,8 +40,8 @@ TENANT_APPS = [
 INSTALLED_APPS = SHARED_APPS + TENANT_APPS
 
 MIDDLEWARE = [
-    'corsheaders.middleware.CorsMiddleware',
     'django_tenants.middleware.main.TenantMainMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
