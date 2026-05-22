@@ -789,134 +789,174 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
 # ESTADÍSTICAS Y DASHBOARD
 # ============================================================================
 
+def _parse_date_range(request):
+    """Parse date_from/date_to query params (YYYY-MM-DD). Defaults to current month."""
+    from django.utils import timezone as tz
+    today = tz.now()
+    date_from_str = request.query_params.get('date_from', None)
+    date_to_str = request.query_params.get('date_to', None)
+
+    if date_from_str and date_to_str:
+        try:
+            date_from = tz.make_aware(datetime.strptime(date_from_str, '%Y-%m-%d'))
+            date_to = tz.make_aware(
+                datetime.strptime(date_to_str, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+            )
+            return date_from, date_to
+        except ValueError:
+            pass
+
+    date_from = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return date_from, today
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def stats_overview(request):
     """
     GET /api/billing/stats/overview/
-    
-    Retorna métricas principales del dashboard:
-    - Ventas totales del mes
-    - Número de órdenes de venta
-    - Compras totales del mes
-    - Clientes activos
-    - Valor del inventario
-    - Productos con stock bajo
+    Params:
+      date_from, date_to            – YYYY-MM-DD, defaults to current month
+      comparison_mode               – previous_period (default) | same_period_last_year
+      category_id, subcategory_id, product_id, supplier_id  – group filter
     """
-    # Calcular fecha de inicio del mes actual
-    today = datetime.now()
-    first_day_of_month = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    
-    # Ventas totales del mes
-    sales_this_month = SalesOrder.objects.filter(
-        created_at__gte=first_day_of_month,
-        status__in=['pending', 'processing', 'completed']
-    ).aggregate(
-        total=Sum('total_price'),
-        count=Count('id')
-    )
-    
-    # Ventas del mes anterior para comparación
-    first_day_last_month = (first_day_of_month - timedelta(days=1)).replace(day=1)
-    sales_last_month = SalesOrder.objects.filter(
-        created_at__gte=first_day_last_month,
-        created_at__lt=first_day_of_month,
-        status__in=['pending', 'processing', 'completed']
-    ).aggregate(
-        total=Sum('total_price'),
-        count=Count('id')
-    )
-    
-    # Calcular tendencias
-    current_sales = sales_this_month['total'] or Decimal('0')
-    last_sales = sales_last_month['total'] or Decimal('0')
-    sales_trend = 0
-    if last_sales > 0:
-        sales_trend = float(((current_sales - last_sales) / last_sales) * 100)
-    
-    current_orders = sales_this_month['count'] or 0
-    last_orders = sales_last_month['count'] or 0
-    orders_trend = 0
-    if last_orders > 0:
-        orders_trend = ((current_orders - last_orders) / last_orders) * 100
-    
-    # Compras totales del mes
-    purchases_this_month = PurchaseOrder.objects.filter(
-        created_at__gte=first_day_of_month,
-        status__in=['pending', 'completed']
-    ).aggregate(
-        total=Sum('total_price')
-    )
-    
-    purchases_last_month = PurchaseOrder.objects.filter(
-        created_at__gte=first_day_last_month,
-        created_at__lt=first_day_of_month,
-        status__in=['pending', 'completed']
-    ).aggregate(
-        total=Sum('total_price')
-    )
-    
-    current_purchases = purchases_this_month['total'] or Decimal('0')
-    last_purchases = purchases_last_month['total'] or Decimal('0')
-    purchases_trend = 0
-    if last_purchases > 0:
-        purchases_trend = float(((current_purchases - last_purchases) / last_purchases) * 100)
-    
-    # Clientes activos (con al menos una compra)
-    active_customers = Customer.objects.filter(
-        salesorder__isnull=False
-    ).distinct().count()
-    
-    # Nuevos clientes del mes
+    date_from, date_to = _parse_date_range(request)
+
+    category_id    = request.query_params.get('category_id')
+    subcategory_id = request.query_params.get('subcategory_id')
+    product_id     = request.query_params.get('product_id')
+    supplier_id    = request.query_params.get('supplier_id')
+    has_group      = any([category_id, subcategory_id, product_id, supplier_id])
+
+    # Comparison period
+    comparison_mode = request.query_params.get('comparison_mode', 'previous_period')
+    if comparison_mode == 'same_period_last_year':
+        try:
+            prev_date_from = date_from.replace(year=date_from.year - 1)
+            prev_date_to   = date_to.replace(year=date_to.year - 1)
+        except ValueError:
+            prev_date_from = date_from - timedelta(days=365)
+            prev_date_to   = date_to - timedelta(days=365)
+    else:
+        delta          = date_to - date_from
+        prev_date_to   = date_from
+        prev_date_from = prev_date_to - delta
+
+    # Build SalesItem Q for a given date window + group filter
+    def _item_q(df, dt):
+        q = Q(
+            sales_order__created_at__gte=df,
+            sales_order__created_at__lte=dt,
+            sales_order__status__in=['pending', 'processing', 'completed'],
+        )
+        if category_id:    q &= Q(product__category_id=category_id)
+        if subcategory_id: q &= Q(product__subcategory_id=subcategory_id)
+        if product_id:     q &= Q(product_id=product_id)
+        if supplier_id:    q &= Q(product__supplier_id=supplier_id)
+        return q
+
+    # Sales aggregation
+    if has_group:
+        # Item-level revenue (avoids counting non-matching items in the order total)
+        sales_cur = SalesItem.objects.filter(_item_q(date_from, date_to)).aggregate(
+            total=Sum(F('quantity') * F('unit_price'), output_field=DecimalField()),
+            count=Count('sales_order_id', distinct=True),
+        )
+        sales_prv = SalesItem.objects.filter(_item_q(prev_date_from, prev_date_to)).aggregate(
+            total=Sum(F('quantity') * F('unit_price'), output_field=DecimalField()),
+            count=Count('sales_order_id', distinct=True),
+        )
+    else:
+        sales_cur = SalesOrder.objects.filter(
+            created_at__gte=date_from, created_at__lte=date_to,
+            status__in=['pending', 'processing', 'completed'],
+        ).aggregate(total=Sum('total_price'), count=Count('id'))
+        sales_prv = SalesOrder.objects.filter(
+            created_at__gte=prev_date_from, created_at__lt=prev_date_to,
+            status__in=['pending', 'processing', 'completed'],
+        ).aggregate(total=Sum('total_price'), count=Count('id'))
+
+    current_sales  = sales_cur['total'] or Decimal('0')
+    last_sales     = sales_prv['total'] or Decimal('0')
+    sales_trend    = float(((current_sales - last_sales) / last_sales) * 100) if last_sales else 0
+    current_orders = sales_cur['count'] or 0
+    last_orders    = sales_prv['count'] or 0
+    orders_trend   = ((current_orders - last_orders) / last_orders) * 100 if last_orders else 0
+
+    # Purchase aggregation
+    def _purchase_q(df, dt):
+        q = Q(created_at__gte=df, created_at__lte=dt, status__in=['pending', 'completed'])
+        if supplier_id:    q &= Q(supplier_id=supplier_id)
+        elif category_id:  q &= Q(items__product__category_id=category_id)
+        elif subcategory_id: q &= Q(items__product__subcategory_id=subcategory_id)
+        elif product_id:   q &= Q(items__product_id=product_id)
+        return q
+
+    purchases_cur     = PurchaseOrder.objects.filter(_purchase_q(date_from, date_to)).distinct().aggregate(total=Sum('total_price'))
+    purchases_prv     = PurchaseOrder.objects.filter(_purchase_q(prev_date_from, prev_date_to)).distinct().aggregate(total=Sum('total_price'))
+    current_purchases = purchases_cur['total'] or Decimal('0')
+    last_purchases    = purchases_prv['total'] or Decimal('0')
+    purchases_trend   = float(((current_purchases - last_purchases) / last_purchases) * 100) if last_purchases else 0
+
+    # Customers who ordered in period (matching group filter)
     new_customers = Customer.objects.filter(
-        created_at__gte=first_day_of_month
+        created_at__gte=date_from, created_at__lte=date_to
+    ).distinct().count()
+
+    # Old customers registered in the period before
+    old_customers = Customer.objects.filter(
+        created_at__gte=prev_date_from, created_at__lte=prev_date_to
     ).count()
-    
-    # Valor del inventario (suma de cantidad * cost_price)
-    inventory_value = Stock.objects.select_related('product').aggregate(
+
+    customers_trend = new_customers - old_customers
+
+    # Inventory — current state, optionally restricted by group filter
+    inv_qs = Stock.objects.select_related('product')
+    if category_id:    inv_qs = inv_qs.filter(product__category_id=category_id)
+    if subcategory_id: inv_qs = inv_qs.filter(product__subcategory_id=subcategory_id)
+    if product_id:     inv_qs = inv_qs.filter(product_id=product_id)
+    if supplier_id:    inv_qs = inv_qs.filter(product__supplier_id=supplier_id)
+
+    inventory_value = inv_qs.aggregate(
         total=Sum(F('quantity') * F('product__cost_price'), output_field=DecimalField())
     )
-    
-    # Productos con stock bajo (por debajo de safety_stock)
-    low_stock_count = Stock.objects.filter(
+    low_stock_count = inv_qs.filter(
         quantity__lt=F('product__safety_stock')
-    ).exclude(
-        product__safety_stock=0
-    ).count()
-    
+    ).exclude(product__safety_stock=0).count()
+
     return Response({
         'total_sales': {
             'value': float(current_sales),
             'formatted': f'${current_sales:,.0f}',
             'trend': 'up' if sales_trend > 0 else 'down' if sales_trend < 0 else 'neutral',
-            'trend_value': f'{abs(sales_trend):.1f}%'
+            'trend_value': f'{abs(sales_trend):.1f}%',
         },
         'total_orders': {
             'value': current_orders,
             'trend': 'up' if orders_trend > 0 else 'down' if orders_trend < 0 else 'neutral',
-            'trend_value': f'{abs(orders_trend):.1f}%'
+            'trend_value': f'{abs(orders_trend):.1f}%',
         },
         'total_purchases': {
             'value': float(current_purchases),
             'formatted': f'${current_purchases:,.0f}',
             'trend': 'up' if purchases_trend > 0 else 'down' if purchases_trend < 0 else 'neutral',
-            'trend_value': f'{abs(purchases_trend):.1f}%'
+            'trend_value': f'{abs(purchases_trend):.1f}%',
         },
         'total_customers': {
-            'value': active_customers,
-            'new_this_month': new_customers,
-            'trend': 'up',
-            'trend_value': f'+{new_customers} nuevos'
+            'value': new_customers,
+            'new_in_period': new_customers,
+            'trend': 'up' if customers_trend > 0 else 'down' if customers_trend < 0 else 'neutral',
+            'trend_value': f'{'+' if customers_trend > 0 else '-'}{customers_trend}',
         },
         'inventory_value': {
             'value': float(inventory_value['total'] or 0),
-            'formatted': f"${inventory_value['total'] or 0:,.0f}"
+            'formatted': f"${inventory_value['total'] or 0:,.0f}",
         },
         'low_stock_products': {
             'value': low_stock_count,
             'trend': 'down' if low_stock_count > 0 else 'neutral',
-            'trend_value': 'Requieren atención' if low_stock_count > 0 else 'Todo OK'
-        }
+            'trend_value': 'Requieren atención' if low_stock_count > 0 else 'Todo OK',
+        },
     })
 
 
@@ -924,119 +964,105 @@ def stats_overview(request):
 @permission_classes([IsAuthenticated])
 def sales_chart(request):
     """
-    GET /api/billing/stats/sales-chart/?period=week
-    
-    Retorna datos de ventas para el gráfico según el período:
-    - week: últimos 7 días
-    - month: últimas 4 semanas
-    - year: últimos 12 meses
+    GET /api/billing/stats/sales-chart/?period=day|week|month&date_from=...&date_to=...
+
+    Uses the same date range as the global dashboard filter.
+    period controls grouping granularity:
+      day   → one bar per day
+      week  → one bar per week
+      month → one bar per month (default)
     """
+    date_from, date_to = _parse_date_range(request)
     period = request.query_params.get('period', 'week')
-    today = datetime.now()
-    
-    if period == 'week':
-        # Últimos 7 días
-        start_date = today - timedelta(days=6)
-        sales = SalesOrder.objects.filter(
-            created_at__gte=start_date,
-            status__in=['pending', 'processing', 'completed']
-        ).annotate(
-            day=TruncDate('created_at')
-        ).values('day').annotate(
-            sales=Sum('total_price'),
-            orders=Count('id')
-        ).order_by('day')
-        
-        # Crear diccionario con todos los días
-        days_dict = {}
-        day_names = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
-        for i in range(7):
-            date = start_date + timedelta(days=i)
-            day_key = date.date()
-            days_dict[day_key] = {
-                'day': day_names[date.weekday()],
-                'sales': 0,
-                'orders': 0
-            }
-        
-        # Llenar con datos reales
-        for sale in sales:
-            day_key = sale['day']
-            if day_key in days_dict:
-                days_dict[day_key]['sales'] = float(sale['sales'] or 0)
-                days_dict[day_key]['orders'] = sale['orders']
-        
-        data = list(days_dict.values())
-    
-    elif period == 'month':
-        # Últimas 4 semanas
-        start_date = today - timedelta(weeks=4)
-        sales = SalesOrder.objects.filter(
-            created_at__gte=start_date,
-            status__in=['pending', 'processing', 'completed']
-        ).annotate(
-            week=TruncWeek('created_at')
-        ).values('week').annotate(
-            sales=Sum('total_price'),
-            orders=Count('id')
-        ).order_by('week')
-        
-        # Crear diccionario con todas las semanas
-        weeks_dict = {}
-        for i in range(4):
-            week_start = start_date + timedelta(weeks=i)
-            week_key = week_start.date()
-            weeks_dict[week_key] = {
-                'day': f'Sem {i+1}',
-                'sales': 0,
-                'orders': 0
-            }
-        
-        # Llenar con datos reales
-        for sale in sales:
-            week_key = sale['week'].date()
-            # Encontrar la semana más cercana
-            closest_week = min(weeks_dict.keys(), key=lambda x: abs((x - week_key).days))
-            weeks_dict[closest_week]['sales'] += float(sale['sales'] or 0)
-            weeks_dict[closest_week]['orders'] += sale['orders']
-        
-        data = list(weeks_dict.values())
-    
-    else:  # year
-        # Últimos 12 meses
-        start_date = today - timedelta(days=365)
-        sales = SalesOrder.objects.filter(
-            created_at__gte=start_date,
-            status__in=['pending', 'processing', 'completed']
-        ).annotate(
-            month=TruncMonth('created_at')
-        ).values('month').annotate(
-            sales=Sum('total_price'),
-            orders=Count('id')
-        ).order_by('month')
-        
-        # Crear diccionario con todos los meses
-        months_dict = {}
-        month_names = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 
-                       'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
-        for i in range(12):
-            month_date = today - timedelta(days=30 * (11 - i))
-            month_key = month_date.replace(day=1).date()
-            months_dict[month_key] = {
-                'day': month_names[month_date.month - 1],
-                'sales': 0,
-                'orders': 0
-            }
-        
-        # Llenar con datos reales
-        for sale in sales:
-            month_key = sale['month'].date()
-            if month_key in months_dict:
-                months_dict[month_key]['sales'] = float(sale['sales'] or 0)
-                months_dict[month_key]['orders'] = sale['orders']
-        
-        data = list(months_dict.values())
-    
+
+    base_qs = SalesOrder.objects.filter(
+        created_at__gte=date_from,
+        created_at__lte=date_to,
+        status__in=['pending', 'processing', 'completed'],
+    )
+
+    month_names = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun',
+                   'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
+    day_names   = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
+
+    date_start = date_from.date()
+    date_end   = date_to.date()
+
+    if period == 'week':  # daily granularity
+        rows = base_qs.annotate(
+            bucket=TruncDate('created_at')
+        ).values('bucket').annotate(
+            sales=Sum('total_price'), orders=Count('id')
+        ).order_by('bucket')
+
+        total_days = (date_end - date_start).days + 1
+        result = {}
+        d = date_start
+        for _ in range(total_days):
+            label = day_names[d.weekday()] if total_days <= 7 else f'{d.day}/{d.month}'
+            result[d] = {'day': label, 'sales': 0, 'orders': 0}
+            d += timedelta(days=1)
+
+        for row in rows:
+            k = row['bucket']
+            if k in result:
+                result[k]['sales']  = float(row['sales'] or 0)
+                result[k]['orders'] = row['orders']
+
+        data = list(result.values())
+
+    elif period == 'month':  # weekly granularity
+        rows = base_qs.annotate(
+            bucket=TruncWeek('created_at')
+        ).values('bucket').annotate(
+            sales=Sum('total_price'), orders=Count('id')
+        ).order_by('bucket')
+
+        rows_by_key = {row['bucket'].date(): row for row in rows}
+
+        # Enumerate ISO-weeks that overlap the date range
+        monday = date_start - timedelta(days=date_start.weekday())
+        weeks  = []
+        d, n   = monday, 1
+        while d <= date_end:
+            weeks.append((d, f'Sem {n}'))
+            d += timedelta(weeks=1)
+            n += 1
+
+        data = []
+        for week_key, label in weeks:
+            row = rows_by_key.get(week_key, {})
+            data.append({
+                'day': label,
+                'sales':  float(row.get('sales', 0) or 0),
+                'orders': row.get('orders', 0) or 0,
+            })
+
+    else:  # monthly granularity
+        rows = base_qs.annotate(
+            bucket=TruncMonth('created_at')
+        ).values('bucket').annotate(
+            sales=Sum('total_price'), orders=Count('id')
+        ).order_by('bucket')
+
+        rows_by_key = {row['bucket'].date(): row for row in rows}
+
+        # Enumerate months in range
+        d = date_start.replace(day=1)
+        months = []
+        while d <= date_end:
+            months.append(d)
+            d = (d.replace(day=28) + timedelta(days=4)).replace(day=1)  # advance one month
+
+        data = []
+        for month_start in months:
+            row = rows_by_key.get(month_start, {})
+            data.append({
+                'day': month_names[month_start.month - 1],
+                'sales':  float(row.get('sales', 0) or 0),
+                'orders': row.get('orders', 0) or 0,
+            })
+
     return Response(data)
 
 
@@ -1044,21 +1070,29 @@ def sales_chart(request):
 @permission_classes([IsAuthenticated])
 def top_products(request):
     """
-    GET /api/billing/stats/top-products/?limit=6
-    
-    Retorna los productos más vendidos por ingresos
+    GET /api/billing/stats/top-products/?limit=6&date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
+
+    Retorna los productos más vendidos por ingresos en el período indicado.
     """
     limit = int(request.query_params.get('limit', 6))
-    
-    # Calcular para el último mes
-    today = datetime.now()
-    first_day_of_month = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    
-    # Agrupar por producto y sumar
-    top_items = SalesItem.objects.filter(
-        sales_order__created_at__gte=first_day_of_month,
-        sales_order__status__in=['pending', 'processing', 'completed']
-    ).select_related('product', 'product__category').values(
+    date_from, date_to = _parse_date_range(request)
+
+    category_id    = request.query_params.get('category_id')
+    subcategory_id = request.query_params.get('subcategory_id')
+    product_id     = request.query_params.get('product_id')
+    supplier_id    = request.query_params.get('supplier_id')
+
+    items_q = Q(
+        sales_order__created_at__gte=date_from,
+        sales_order__created_at__lte=date_to,
+        sales_order__status__in=['pending', 'processing', 'completed'],
+    )
+    if category_id:    items_q &= Q(product__category_id=category_id)
+    if subcategory_id: items_q &= Q(product__subcategory_id=subcategory_id)
+    if product_id:     items_q &= Q(product_id=product_id)
+    if supplier_id:    items_q &= Q(product__supplier_id=supplier_id)
+
+    top_items = SalesItem.objects.filter(items_q).select_related('product', 'product__category').values(
         'product__id',
         'product__sku',
         'product__description',
@@ -1145,41 +1179,61 @@ def stock_alerts(request):
 @permission_classes([IsAuthenticated])
 def sales_by_channel(request):
     """
-    GET /api/billing/stats/sales-by-channel/
-    
-    Retorna distribución de ventas por canal
+    GET /api/billing/stats/sales-by-channel/?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
+
+    Retorna distribución de ventas por canal en el período indicado.
     """
-    today = datetime.now()
-    first_day_of_month = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    
-    # Ventas por canal
-    channel_sales = SalesOrder.objects.filter(
-        created_at__gte=first_day_of_month,
-        status__in=['pending', 'processing', 'completed']
-    ).values('sales_channel').annotate(
-        total=Sum('total_price'),
-        count=Count('id')
-    )
-    
-    # Calcular total para porcentajes
+    date_from, date_to = _parse_date_range(request)
+
+    category_id    = request.query_params.get('category_id')
+    subcategory_id = request.query_params.get('subcategory_id')
+    product_id     = request.query_params.get('product_id')
+    supplier_id    = request.query_params.get('supplier_id')
+    has_group      = any([category_id, subcategory_id, product_id, supplier_id])
+
+    channel_names = {'ecommerce': 'E-commerce', 'storefront': 'Local físico', 'wholesale': 'Mayorista'}
+
+    if has_group:
+        items_q = Q(
+            sales_order__created_at__gte=date_from,
+            sales_order__created_at__lte=date_to,
+            sales_order__status__in=['pending', 'processing', 'completed'],
+        )
+        if category_id:    items_q &= Q(product__category_id=category_id)
+        if subcategory_id: items_q &= Q(product__subcategory_id=subcategory_id)
+        if product_id:     items_q &= Q(product_id=product_id)
+        if supplier_id:    items_q &= Q(product__supplier_id=supplier_id)
+
+        rows = SalesItem.objects.filter(items_q).values(
+            'sales_order__sales_channel'
+        ).annotate(
+            total=Sum(F('quantity') * F('unit_price'), output_field=DecimalField()),
+            count=Count('sales_order_id', distinct=True),
+        )
+        channel_sales = [
+            {'sales_channel': r['sales_order__sales_channel'], 'total': r['total'], 'count': r['count']}
+            for r in rows
+        ]
+    else:
+        channel_sales = list(SalesOrder.objects.filter(
+            created_at__gte=date_from,
+            created_at__lte=date_to,
+            status__in=['pending', 'processing', 'completed'],
+        ).values('sales_channel').annotate(total=Sum('total_price'), count=Count('id')))
+
     total_sales = sum(float(item['total'] or 0) for item in channel_sales)
-    
+
     data = []
-    channel_names = {
-        'ecommerce': 'E-commerce',
-        'storefront': 'Local físico',
-        'wholesale': 'Mayorista'
-    }
-    
     for item in channel_sales:
         percentage = (float(item['total'] or 0) / total_sales * 100) if total_sales > 0 else 0
+        ch = item['sales_channel']
         data.append({
-            'channel': channel_names.get(item['sales_channel'], item['sales_channel']),
-            'sales': float(item['total'] or 0),
-            'orders': item['count'],
-            'percentage': round(percentage, 1)
+            'channel':    channel_names.get(ch, ch),
+            'sales':      float(item['total'] or 0),
+            'orders':     item['count'],
+            'percentage': round(percentage, 1),
         })
-    
+
     return Response(data)
 
 
@@ -1187,12 +1241,28 @@ def sales_by_channel(request):
 @permission_classes([IsAuthenticated])
 def order_status_summary(request):
     """
-    GET /api/billing/stats/order-status/
-    
-    Retorna resumen de órdenes por estado
+    GET /api/billing/stats/order-status/?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
+
+    Retorna resumen de órdenes creadas en el período por estado.
     """
-    # Contar órdenes por estado
-    status_counts = SalesOrder.objects.values('status').annotate(
+    date_from, date_to = _parse_date_range(request)
+
+    category_id    = request.query_params.get('category_id')
+    subcategory_id = request.query_params.get('subcategory_id')
+    product_id     = request.query_params.get('product_id')
+    supplier_id    = request.query_params.get('supplier_id')
+
+    qs = SalesOrder.objects.filter(created_at__gte=date_from, created_at__lte=date_to)
+
+    item_q = Q()
+    if category_id:    item_q &= Q(sales_items__product__category_id=category_id)
+    if subcategory_id: item_q &= Q(sales_items__product__subcategory_id=subcategory_id)
+    if product_id:     item_q &= Q(sales_items__product_id=product_id)
+    if supplier_id:    item_q &= Q(sales_items__product__supplier_id=supplier_id)
+    if item_q:
+        qs = qs.filter(item_q).distinct()
+
+    status_counts = qs.values('status').annotate(
         count=Count('id')
     )
     
@@ -1211,5 +1281,41 @@ def order_status_summary(request):
             'status_display': status_names.get(item['status'], item['status']),
             'count': item['count']
         })
-    
+
     return Response(data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def filter_options(request):
+    """
+    GET /api/billing/stats/filter-options/
+    Params: category_id (filters subcategories + products), subcategory_id (filters products)
+
+    Returns the lists needed to populate the dashboard group-filter dropdowns.
+    """
+    from core.stock.models import Category, Subcategory
+    from users.models import Supplier
+
+    category_id    = request.query_params.get('category_id')
+    subcategory_id = request.query_params.get('subcategory_id')
+
+    categories    = list(Category.objects.values('id', 'name').order_by('name'))
+    sub_qs        = Subcategory.objects.all()
+    if category_id:
+        sub_qs = sub_qs.filter(category_id=category_id)
+    subcategories = list(sub_qs.values('id', 'name', 'category_id').order_by('name'))
+
+    prod_qs = Product.objects.filter(status='active')
+    if category_id:    prod_qs = prod_qs.filter(category_id=category_id)
+    if subcategory_id: prod_qs = prod_qs.filter(subcategory_id=subcategory_id)
+    products  = list(prod_qs.values('id', 'sku', 'description').order_by('description')[:300])
+
+    suppliers = list(Supplier.objects.values('id', 'name').order_by('name'))
+
+    return Response({
+        'categories':    categories,
+        'subcategories': subcategories,
+        'products':      products,
+        'suppliers':     suppliers,
+    })

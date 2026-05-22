@@ -1,14 +1,15 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 from core.billing.views import (
-    SalesOrderViewSet, 
+    SalesOrderViewSet,
     PurchaseOrderViewSet,
     stats_overview,
     sales_chart,
     top_products,
     stock_alerts,
     sales_by_channel,
-    order_status_summary
+    order_status_summary,
+    filter_options,
 )
 
 router = DefaultRouter()
@@ -23,6 +24,7 @@ stats_urls = [
     path('billing/stats/stock-alerts/', stock_alerts, name='stock-alerts'),
     path('billing/stats/sales-by-channel/', sales_by_channel, name='sales-by-channel'),
     path('billing/stats/order-status/', order_status_summary, name='order-status-summary'),
+    path('billing/stats/filter-options/', filter_options, name='stats-filter-options'),
 ]
 
 urlpatterns = router.urls + stats_urls

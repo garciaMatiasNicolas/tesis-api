@@ -60,7 +60,7 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def get_totp_uri(self):
         schema = getattr(connection, "schema_name", "public")
-        app_name = f"Arkhos - {schema}"
+        app_name = f"Arkhos ERP - {schema}"
         return f"otpauth://totp/{app_name}:{self.email}?secret={self.otp_secret}&issuer={app_name}"
 
     def verify_otp(self, token):
