@@ -946,7 +946,7 @@ def stats_overview(request):
             'value': new_customers,
             'new_in_period': new_customers,
             'trend': 'up' if customers_trend > 0 else 'down' if customers_trend < 0 else 'neutral',
-            'trend_value': f'{'+' if customers_trend > 0 else '-'}{customers_trend}',
+            'trend_value': f"{'+' if customers_trend > 0 else '-'}{customers_trend}",
         },
         'inventory_value': {
             'value': float(inventory_value['total'] or 0),
