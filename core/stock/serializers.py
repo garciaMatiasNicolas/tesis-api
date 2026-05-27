@@ -244,7 +244,7 @@ class StockSerializer(serializers.ModelSerializer):
         if obj.warehouse:
             return PurchaseItem.objects.filter(
                 product=obj.product,
-                purchase_order__status='approved',
+                purchase_order__status=['pending', 'processing'],
                 purchase_order__received=False,
                 purchase_order__warehouse_destination=obj.warehouse
             ).aggregate(total_pending=total_expr)['total_pending'] or 0
@@ -252,7 +252,7 @@ class StockSerializer(serializers.ModelSerializer):
         elif obj.branch:
             return PurchaseItem.objects.filter(
                 product=obj.product,
-                purchase_order__status='approved',
+                purchase_order__status=['pending', 'processing'],
                 purchase_order__received=False,
                 purchase_order__branch_destination=obj.branch
             ).aggregate(total_pending=total_expr)['total_pending'] or 0
