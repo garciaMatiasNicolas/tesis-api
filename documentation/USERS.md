@@ -46,9 +46,15 @@ El módulo `users` es una aplicación Django completa que maneja la gestión de 
 
 ```python
 # URLs principales de autenticación
-POST /api/users/auth/login/          # Inicio de sesión
-POST /api/users/auth/verify-otp/     # Verificación OTP
-POST /api/users/auth/enable-2fa/     # Activación 2FA
+POST /api/users/auth/login/                  # Inicio de sesión
+POST /api/users/auth/verify-otp/             # Verificación OTP
+POST /api/users/auth/enable-2fa/             # Activación 2FA
+
+# Recuperación de acceso
+POST /api/users/auth/recovery/request/       # Solicitar token de recuperación (los 3 casos)
+POST /api/users/auth/recovery/full/          # Caso 1: reset contraseña + 2FA
+POST /api/users/auth/recovery/password/      # Caso 2: reset contraseña (tiene 2FA)
+POST /api/users/auth/recovery/2fa/           # Caso 3: reset 2FA (tiene contraseña)
 ```
 
 ### Flujo de Autenticación
@@ -64,6 +70,60 @@ POST /api/users/auth/enable-2fa/     # Activación 2FA
 3. **Activación 2FA**: `POST /auth/enable-2fa/`
    - Confirma configuración inicial de 2FA
    - Marca first_login como False
+
+### Sistema de Recuperación de Acceso
+
+Maneja 3 situaciones distintas. En todos los casos el primer paso es solicitar un token vía email.
+
+#### Paso 1 — Solicitar token (común a los 3 casos)
+
+```
+POST /api/users/auth/recovery/request/
+Body: { "email": "...", "recovery_type": "full_recovery" | "password_only" | "2fa_only" }
+Response: { "message": "recovery_email_sent" }
+```
+
+El sistema envía un email a la casilla del usuario con el token de recuperación (expira en 1 hora).
+
+---
+
+#### Caso 1 — Olvidó contraseña Y sin acceso al dispositivo 2FA (`full_recovery`)
+
+Resetea contraseña y 2FA. El usuario deberá re-vincular su autenticador al iniciar sesión.
+
+```
+POST /api/users/auth/recovery/full/
+Body: { "token": "...", "new_password": "..." }
+Response: { "message": "password_reset_2fa_reset", "otp_uri": "...", "qr_code": "data:image/png;base64,...", "user_email": "..." }
+```
+
+Luego el usuario inicia sesión normalmente → el flujo estándar de primer login re-vincula el autenticador.
+
+---
+
+#### Caso 2 — Olvidó contraseña pero SÍ tiene acceso al dispositivo 2FA (`password_only`)
+
+Resetea solo la contraseña. Requiere confirmación con OTP del autenticador.
+
+```
+POST /api/users/auth/recovery/password/
+Body: { "token": "...", "otp": "...", "new_password": "..." }
+Response: { "message": "password_reset_success" }
+```
+
+---
+
+#### Caso 3 — Tiene contraseña pero sin acceso al dispositivo 2FA (`2fa_only`)
+
+Resetea solo el 2FA. Requiere confirmación con la contraseña actual.
+
+```
+POST /api/users/auth/recovery/2fa/
+Body: { "token": "...", "password": "..." }
+Response: { "message": "2fa_reset_success", "otp_uri": "...", "qr_code": "data:image/png;base64,...", "user_email": "..." }
+```
+
+Luego el usuario inicia sesión normalmente → el flujo estándar de primer login re-vincula el autenticador.
 
 ## 🎯 ViewSets y Endpoints
 
@@ -267,7 +327,7 @@ if request.user.role == 'superadmin':
 1. **Logging avanzado** para auditoría de seguridad
 2. **Cache** para consultas frecuentes de usuarios
 3. **Notificaciones** por email para eventos importantes
-4. **API de recuperación de contraseña**
+4. ~~**API de recuperación de contraseña**~~ ✅ Implementado
 5. **Gestión de sesiones** múltiples por usuario
 
 ## 📞 Integración con Otros Módulos

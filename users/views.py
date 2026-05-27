@@ -99,9 +99,12 @@ class EmailExistsAPIView(APIView):
         user_exists = User.objects.filter(email=email).exists()
         
         if user_exists:
-            # Ya existe un usuario con este email
+            user_obj = User.objects.get(email=email)
+            is_customer = Customer.objects.filter(email=email)
             return Response(data={
-                'available': False, 
+                'available': False,
+                'is_customer': is_customer.exists(),
+                'is_client': user_obj.role == 'client',
                 'exists': True,
                 'has_user': True,
                 'message': 'Ya existe una cuenta con este email. Por favor, inicia sesión.'

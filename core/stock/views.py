@@ -1494,7 +1494,7 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
         worksheet1.title = 'Ajuste de Stock'
         
         # Headers
-        headers = ['ID Stock', 'SKU + Descripción', 'Ubicación', 'Cantidad Actual', 'Nueva Cantidad']
+        headers = ['ID Stock', 'SKU + Descripción', 'Ubicación', 'ID Depósito Actual', 'ID Sucursal Actual', 'Cantidad Actual', 'Nueva Cantidad', 'ID Nuevo Depósito', 'ID Nueva Sucursal']
         worksheet1.append(headers)
         
         # Formato de headers
@@ -1509,13 +1509,17 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
         for stock in stocks:
             sku_desc = f"{stock.product.sku} - {stock.product.description}"
             location = stock.warehouse.name if stock.warehouse else (stock.branch.name if stock.branch else 'Sin ubicación')
-            
+
             worksheet1.append([
                 stock.id,
                 sku_desc,
                 location,
+                stock.warehouse_id if stock.warehouse_id else '',
+                stock.branch_id if stock.branch_id else '',
                 float(stock.quantity),
                 '',  # Nueva cantidad (vacío para que el usuario complete)
+                '',  # ID Nuevo Depósito (vacío para que el usuario complete)
+                '',  # ID Nueva Sucursal (vacío para que el usuario complete)
             ])
         
         # Ajustar anchos de columna
@@ -1531,30 +1535,80 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
             adjusted_width = min(max_length + 2, 50)
             worksheet1.column_dimensions[column_letter].width = adjusted_width
         
-        # ===== Sheet 2: Instrucciones =====
-        worksheet2 = workbook.create_sheet(title='Instrucciones')
+        # ===== Sheet 2: Catálogo de Depósitos =====
+        worksheet2 = workbook.create_sheet(title='Depósitos')
+        warehouses_ref = Warehouse.objects.all().values('id', 'name', 'city')
+        df_warehouses = pd.DataFrame(list(warehouses_ref))
+        if not df_warehouses.empty:
+            df_warehouses.columns = ['ID', 'Nombre', 'Ciudad']
+            for col_idx, col_name in enumerate(df_warehouses.columns, 1):
+                cell = worksheet2.cell(row=1, column=col_idx, value=col_name)
+                cell.fill = header_fill
+                cell.font = header_font
+            for row_idx, row_data in enumerate(df_warehouses.values, 2):
+                for col_idx, value in enumerate(row_data, 1):
+                    worksheet2.cell(row=row_idx, column=col_idx, value=value)
+        else:
+            worksheet2.append(['ID', 'Nombre', 'Ciudad'])
+            for cell in worksheet2[1]:
+                cell.fill = header_fill
+                cell.font = header_font
+        for column in worksheet2.columns:
+            max_length = max((len(str(c.value)) for c in column if c.value), default=10)
+            worksheet2.column_dimensions[column[0].column_letter].width = min(max_length + 2, 50)
+
+        # ===== Sheet 3: Catálogo de Sucursales =====
+        worksheet3 = workbook.create_sheet(title='Sucursales')
+        branches_ref = Branch.objects.all().values('id', 'name', 'city')
+        df_branches = pd.DataFrame(list(branches_ref))
+        if not df_branches.empty:
+            df_branches.columns = ['ID', 'Nombre', 'Ciudad']
+            for col_idx, col_name in enumerate(df_branches.columns, 1):
+                cell = worksheet3.cell(row=1, column=col_idx, value=col_name)
+                cell.fill = header_fill
+                cell.font = header_font
+            for row_idx, row_data in enumerate(df_branches.values, 2):
+                for col_idx, value in enumerate(row_data, 1):
+                    worksheet3.cell(row=row_idx, column=col_idx, value=value)
+        else:
+            worksheet3.append(['ID', 'Nombre', 'Ciudad'])
+            for cell in worksheet3[1]:
+                cell.fill = header_fill
+                cell.font = header_font
+        for column in worksheet3.columns:
+            max_length = max((len(str(c.value)) for c in column if c.value), default=10)
+            worksheet3.column_dimensions[column[0].column_letter].width = min(max_length + 2, 50)
+
+        # ===== Sheet 4: Instrucciones =====
+        worksheet4 = workbook.create_sheet(title='Instrucciones')
         instructions = [
             ['INSTRUCCIONES PARA AJUSTE DE STOCK'],
             [''],
+            ['AJUSTE DE CANTIDAD:'],
             ['1. Complete la columna "Nueva Cantidad" con la cantidad real contada'],
-            ['2. Complete la columna "Motivo" con la razón del ajuste (ej: "Inventario físico", "Corrección de error", etc.)'],
-            ['3. NO modifique las columnas: ID Stock, SKU + Descripción, Ubicación, Cantidad Actual'],
-            ['4. Las filas que no tengan "Nueva Cantidad" serán ignoradas'],
-            ['5. El sistema creará movimientos de ajuste automáticamente'],
+            ['2. Las filas sin "Nueva Cantidad" serán ignoradas (solo se procesarán cambios de ubicación)'],
+            ['3. Solo se ajustarán filas donde "Nueva Cantidad" sea diferente a "Cantidad Actual"'],
+            [''],
+            ['CAMBIO DE UBICACIÓN:'],
+            ['4. Para mover el stock a un depósito diferente, complete "ID Nuevo Depósito" con el ID de la hoja "Depósitos"'],
+            ['5. Para mover el stock a una sucursal diferente, complete "ID Nueva Sucursal" con el ID de la hoja "Sucursales"'],
+            ['6. Complete solo UNO de los dos campos (Depósito o Sucursal), nunca ambos'],
+            ['7. Si la nueva ubicación ya tiene stock del mismo producto, se mostrará un error (no se fusionan registros)'],
+            [''],
+            ['COLUMNAS DE SOLO LECTURA (NO MODIFICAR):'],
+            ['• ID Stock, SKU + Descripción, Ubicación, ID Depósito Actual, ID Sucursal Actual, Cantidad Actual'],
             [''],
             ['IMPORTANTE:'],
-            ['• Solo se procesarán las filas donde "Nueva Cantidad" sea diferente a "Cantidad Actual"'],
-            ['• Los ajustes se registrarán como movimientos de tipo ADJUSTMENT'],
+            ['• Los ajustes de cantidad se registrarán como movimientos de tipo ADJUSTMENT'],
             ['• NO elimine ni agregue columnas a la hoja "Ajuste de Stock"'],
         ]
-        
+
         for row in instructions:
-            worksheet2.append(row)
-        
-        # Formato para instrucciones
-        worksheet2.column_dimensions['A'].width = 80
-        worksheet2['A1'].font = Font(bold=True, size=14)
-        
+            worksheet4.append(row)
+
+        worksheet4.column_dimensions['A'].width = 90
+        worksheet4['A1'].font = Font(bold=True, size=14)
+
         workbook.save(output)
         output.seek(0)
         
@@ -1635,96 +1689,174 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
             column_mapping = {
                 'ID Stock': 'stock_id',
                 'Nueva Cantidad': 'new_quantity',
+                'ID Nuevo Depósito': 'new_warehouse_id',
+                'ID Nueva Sucursal': 'new_branch_id',
             }
-            
+
             df = df.rename(columns=column_mapping)
-            
-            # ===== OPTIMIZACIÓN: Precargar registros de stock (1 query) =====
+
+            # ===== OPTIMIZACIÓN: Precargar registros de stock (3 queries) =====
             # Obtener IDs únicos de stock del archivo
             stock_ids = df['stock_id'].dropna().unique().tolist()
             stock_ids = [int(sid) for sid in stock_ids if pd.notna(sid)]
-            
+
             # Precargar stocks necesarios con select_related (1 query)
             stocks_qs = Stock.objects.filter(id__in=stock_ids).select_related('product', 'warehouse', 'branch')
             stocks_map = {s.id: s for s in stocks_qs}
-            
+
+            # Precargar todos los warehouses y branches para validar nueva ubicación (2 queries)
+            warehouses_map = {w.id: w for w in Warehouse.objects.all()}
+            branches_map = {b.id: b for b in Branch.objects.all()}
+
+            # Precargar mapa de ubicación actual de todos los stocks para detectar conflictos (1 query)
+            stocks_by_location = {}
+            for s in Stock.objects.all():
+                if s.warehouse_id:
+                    stocks_by_location[(s.product_id, 'WHA', s.warehouse_id)] = s.id
+                elif s.branch_id:
+                    stocks_by_location[(s.product_id, 'BRA', s.branch_id)] = s.id
+
             # Preparar listas para operaciones en bulk
             movements_to_create = []
             stocks_to_update = []
             adjustments_created = 0
+            has_location_changes = False
             errors = []
-            
+
             # ===== Procesar datos en memoria (0 queries adicionales) =====
             for index, row in df.iterrows():
                 try:
-                    # Saltar filas sin nueva cantidad
-                    if pd.isna(row.get('new_quantity')) or row.get('new_quantity') == '':
-                        continue
-                    
                     # Validar ID Stock
-                    stock_id = int(row['stock_id']) if pd.notna(row['stock_id']) else None
-                    if not stock_id:
-                        errors.append(f'Fila {index + 2}: ID Stock es obligatorio')
+                    stock_id_raw = row.get('stock_id')
+                    if pd.isna(stock_id_raw):
                         continue
-                    
+                    stock_id = int(stock_id_raw)
+
                     # Obtener registro de stock del diccionario (lookup O(1))
                     stock = stocks_map.get(stock_id)
                     if not stock:
                         errors.append(f'Fila {index + 2}: Stock con ID {stock_id} no existe')
                         continue
-                    
-                    # Validar nueva cantidad
-                    try:
-                        new_quantity = float(row['new_quantity'])
-                    except (ValueError, TypeError):
-                        errors.append(f'Fila {index + 2}: Nueva Cantidad debe ser un número')
+
+                    # --- Procesar cambio de ubicación ---
+                    raw_wh = row.get('new_warehouse_id')
+                    raw_br = row.get('new_branch_id')
+                    has_new_warehouse = pd.notna(raw_wh) and str(raw_wh).strip() != ''
+                    has_new_branch = pd.notna(raw_br) and str(raw_br).strip() != ''
+
+                    if has_new_warehouse and has_new_branch:
+                        errors.append(f'Fila {index + 2}: Especifique solo un campo de nueva ubicación (Depósito O Sucursal, no ambos)')
                         continue
-                    
-                    # Calcular diferencia
-                    current_quantity = float(stock.quantity)
-                    difference = new_quantity - current_quantity
-                    
-                    # Solo procesar si hay diferencia
-                    if abs(difference) < 0.0001:  # Evitar errores de precisión flotante
+
+                    # Capturar tipo de ubicación original antes de modificar
+                    old_location_type = 'WHA' if stock.warehouse_id else ('BRA' if stock.branch_id else 'WHA')
+                    new_location_type = old_location_type
+
+                    location_changed = False
+                    if has_new_warehouse:
+                        new_wh_id = int(float(str(raw_wh).strip()))
+                        new_warehouse = warehouses_map.get(new_wh_id)
+                        if not new_warehouse:
+                            errors.append(f'Fila {index + 2}: Depósito con ID {new_wh_id} no existe')
+                            continue
+                        if stock.warehouse_id != new_wh_id:
+                            conflict_id = stocks_by_location.get((stock.product_id, 'WHA', new_wh_id))
+                            if conflict_id and conflict_id != stock_id:
+                                errors.append(f'Fila {index + 2}: Ya existe un registro de stock de este producto en el depósito ID {new_wh_id} (Stock ID: {conflict_id})')
+                                continue
+                            stock.warehouse = new_warehouse
+                            stock.branch = None
+                            new_location_type = 'WHA'
+                            location_changed = True
+                            has_location_changes = True
+
+                    elif has_new_branch:
+                        new_br_id = int(float(str(raw_br).strip()))
+                        new_branch = branches_map.get(new_br_id)
+                        if not new_branch:
+                            errors.append(f'Fila {index + 2}: Sucursal con ID {new_br_id} no existe')
+                            continue
+                        if stock.branch_id != new_br_id:
+                            conflict_id = stocks_by_location.get((stock.product_id, 'BRA', new_br_id))
+                            if conflict_id and conflict_id != stock_id:
+                                errors.append(f'Fila {index + 2}: Ya existe un registro de stock de este producto en la sucursal ID {new_br_id} (Stock ID: {conflict_id})')
+                                continue
+                            stock.branch = new_branch
+                            stock.warehouse = None
+                            new_location_type = 'BRA'
+                            location_changed = True
+                            has_location_changes = True
+
+                    # --- Procesar cambio de cantidad ---
+                    raw_qty = row.get('new_quantity')
+                    has_new_quantity = pd.notna(raw_qty) and str(raw_qty).strip() != ''
+
+                    if not has_new_quantity and not location_changed:
                         continue
-                    
-                    # Preparar movimiento de ajuste (se creará en bulk)
-                    movement_type = 'IN' if difference > 0 else 'OUT'
-                    quantity_abs = abs(difference)
-                    
-                    movement = StockMovement(
-                        product=stock.product,
-                        warehouse=stock.warehouse,
-                        branch=stock.branch,
-                        movement_type=movement_type,
-                        quantity=quantity_abs,
-                        status='REC',
-                        date=timezone.now()
-                    )
-                    movements_to_create.append(movement)
-                    
-                    # Actualizar cantidad en memoria (se guardará en bulk)
-                    stock.quantity = new_quantity
-                    stocks_to_update.append(stock)
-                    
-                    adjustments_created += 1
-                    
+
+                    quantity_changed = False
+                    if has_new_quantity:
+                        try:
+                            new_quantity = float(raw_qty)
+                        except (ValueError, TypeError):
+                            errors.append(f'Fila {index + 2}: Nueva Cantidad debe ser un número')
+                            continue
+
+                        current_quantity = float(stock.quantity)
+                        difference = new_quantity - current_quantity
+
+                        if abs(difference) >= 0.0001:
+                            quantity_abs = abs(difference)
+                            user_display = f"{request.user.first_name} {request.user.last_name}" if request.user.first_name and request.user.last_name else str(request.user)
+                            adj_note = f"Ajuste de inventario realizado por {user_display} el dia {timezone.now().strftime('%Y-%m-%d %H:%M')}"
+                            initial_comment = {
+                                "date": timezone.now().isoformat(),
+                                "comment": adj_note,
+                                "status_before": None,
+                                "status_after": "REC",
+                                "user": str(request.user),
+                                "user_id": request.user.id,
+                            }
+
+                            movement = StockMovement(
+                                product=stock.product,
+                                warehouse=stock.warehouse,
+                                branch=stock.branch,
+                                movement_type='ADJ',
+                                from_location=old_location_type,
+                                to_location=new_location_type,
+                                quantity=quantity_abs,
+                                status='REC',
+                                note=adj_note,
+                                comments=[initial_comment],
+                                date=timezone.now()
+                            )
+                            movements_to_create.append(movement)
+
+                            stock.quantity = new_quantity
+                            quantity_changed = True
+                            adjustments_created += 1
+
+                    if location_changed or quantity_changed:
+                        stocks_to_update.append(stock)
+
                 except Exception as e:
                     errors.append(f'Fila {index + 2}: {str(e)}')
                     continue
-            
-            # ===== Ejecutar operaciones en bulk (2 queries totales) =====
+
+            # ===== Ejecutar operaciones en bulk =====
             with transaction.atomic():
                 # Crear movimientos de ajuste (1 query)
                 if movements_to_create:
                     StockMovement.objects.bulk_create(movements_to_create)
-                
+
                 # Actualizar stocks (1 query)
                 if stocks_to_update:
-                    Stock.objects.bulk_update(stocks_to_update, ['quantity'])
-            
+                    update_fields = ['quantity', 'warehouse', 'branch'] if has_location_changes else ['quantity']
+                    Stock.objects.bulk_update(stocks_to_update, update_fields)
+
             return Response({
-                'message': f'Importación completada. Creados: {adjustments_created}, Actualizados: 0',
+                'message': f'Importación completada. Ajustes de cantidad: {adjustments_created}',
                 'created': adjustments_created,
                 'updated': 0,
                 'errors': errors if errors else []

@@ -38,7 +38,7 @@ class ProductList(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        products = Product.objects.annotate(
+        products = Product.objects.filter(status='active').annotate(
             total_stock=Coalesce(
                 Sum('stocks__quantity'), 
                 Value(0),

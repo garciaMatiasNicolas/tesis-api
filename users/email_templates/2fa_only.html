@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Revinculación de dispositivo 2FA</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f4f6f9;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f6f9;padding:40px 0;">
+    <tr>
+      <td align="center">
+        <table width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+
+          <!-- Header -->
+          <tr>
+            <td style="background:linear-gradient(135deg,#18c29c 0%,#13a884 100%);padding:40px 48px;text-align:center;">
+              <img src="https://img.icons8.com/ios-filled/64/ffffff/smartphone-tablet.png" width="32" height="32" alt="2FA" style="display:block;margin:0 auto 16px;"/>
+              <h1 style="color:#ffffff;margin:0;font-size:24px;font-weight:700;letter-spacing:-0.3px;">Revinculación de dispositivo 2FA</h1>
+              <p style="color:rgba(255,255,255,0.85);margin:8px 0 0;font-size:14px;">Arkhos ERP</p>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="padding:40px 48px;">
+              <p style="color:#223263;font-size:16px;margin:0 0 8px;font-weight:600;">Hola, {{ user_name }}</p>
+              <p style="color:#6b7280;font-size:15px;line-height:1.6;margin:0 0 28px;">
+                Recibimos una solicitud para <strong>vincular un nuevo dispositivo de autenticación (2FA)</strong>.
+                Como recordás tu contraseña, deberás confirmarla para completar el proceso.
+              </p>
+
+              <!-- Token box -->
+              <table width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 28px;">
+                <tr>
+                  <td style="background:#f8fafc;border:2px dashed #18c29c;border-radius:10px;padding:24px;text-align:center;">
+                    <p style="margin:0 0 8px;font-size:12px;color:#9ca3af;text-transform:uppercase;letter-spacing:1px;font-weight:600;">Token de recuperación</p>
+                    <p style="margin:0;font-family:'Courier New',Courier,monospace;font-size:14px;color:#223263;font-weight:700;word-break:break-all;letter-spacing:1px;">{{ token }}</p>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Steps -->
+              <table width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 28px;">
+                <tr>
+                  <td style="background:#f0fdf9;border-left:4px solid #18c29c;border-radius:0 8px 8px 0;padding:16px 20px;">
+                    <p style="margin:0 0 10px;font-size:13px;font-weight:700;color:#223263;">¿Cómo continuar?</p>
+                    <ol style="margin:0;padding-left:18px;color:#6b7280;font-size:13px;line-height:2;">
+                      <li>Andá a la pantalla de recuperación en la app</li>
+                      <li>Pegá el token recibido</li>
+                      <li>Ingresá tu <strong>contraseña actual</strong></li>
+                      <li>Al iniciar sesión, vinculá tu nuevo dispositivo 2FA escaneando el código QR</li>
+                    </ol>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Expiry notice -->
+              <table width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 28px;">
+                <tr>
+                  <td style="background:#fef9ec;border:1px solid #fcd34d;border-radius:8px;padding:14px 18px;">
+                    <p style="margin:0;font-size:13px;color:#92400e;">
+                      ⏰ <strong>Este token expira en {{ expiry_hours }} hora(s)</strong> a partir del momento en que se generó.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Security warning -->
+              <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:14px 18px;">
+                    <p style="margin:0;font-size:13px;color:#991b1b;">
+                      🔒 <strong>¿No realizaste esta solicitud?</strong> Ignorá este correo inmediatamente y considerá cambiar tu contraseña por seguridad.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="background:#223263;padding:24px 48px;text-align:center;">
+              <p style="margin:0;color:rgba(255,255,255,0.6);font-size:12px;">
+                Este es un correo automático de <strong style="color:rgba(255,255,255,0.85);">Arkhos ERP</strong>. Por favor no respondas este email.
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

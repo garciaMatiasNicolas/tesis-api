@@ -1,9 +1,12 @@
 import pyotp
+import secrets
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin, BaseUserManager
 from django.db import models
 from core.store.models import Store, Branch
 from django.utils.text import slugify
 from django.db import connection
+from django.utils import timezone
+from datetime import timedelta
 
 def _upload_to(instance, filename, folder):
     store_name = slugify(instance.store.name) if instance.store and instance.store.name else "default"
@@ -109,3 +112,32 @@ class Supplier(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class PasswordRecoveryToken(models.Model):
+    RECOVERY_TYPE_CHOICES = (
+        ('full_recovery', 'Full Recovery (no password, no 2FA)'),
+        ('password_only', 'Password Only (has 2FA)'),
+        ('2fa_only', '2FA Only (has password)'),
+        ('client_recovery', 'Client Password Recovery'),
+    )
+
+    user = models.ForeignKey('User', on_delete=models.CASCADE, related_name='recovery_tokens')
+    token = models.CharField(max_length=64, unique=True)
+    recovery_type = models.CharField(max_length=20, choices=RECOVERY_TYPE_CHOICES)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    used = models.BooleanField(default=False)
+
+    def is_valid(self):
+        return not self.used and timezone.now() <= self.expires_at
+
+    def save(self, *args, **kwargs):
+        if not self.token:
+            self.token = secrets.token_urlsafe(32)
+        if not self.expires_at:
+            self.expires_at = timezone.now() + timedelta(hours=1)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.recovery_type} token for {self.user.email}"

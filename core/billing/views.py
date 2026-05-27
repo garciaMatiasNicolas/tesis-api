@@ -342,9 +342,10 @@ class SalesOrderViewSet(viewsets.ModelViewSet):
         
         # Filtrar órdenes solo del cliente autenticado
         orders = SalesOrder.objects.filter(customer=customer).order_by('-created_at')
-        
+
         # Serializar y devolver
         serializer = self.get_serializer(orders, many=True)
+
         return Response(serializer.data, status=status.HTTP_200_OK)
     
     @action(detail=True, methods=['get'], url_path='download-pdf')
