@@ -2087,7 +2087,7 @@ class StockMovementViewSet(viewsets.ModelViewSet):
         if branch_id:
             queryset = queryset.filter(branch_id=branch_id)
         
-        if movement_type and movement_type in ['IN', 'OUT']:
+        if movement_type and movement_type in ['IN', 'OUT', 'ADJ']:
             queryset = queryset.filter(movement_type=movement_type)
         
         if status_filter and status_filter in ['PEN', 'TRAN', 'REC', 'CAN']:
