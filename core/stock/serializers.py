@@ -241,24 +241,15 @@ class StockSerializer(serializers.ModelSerializer):
                 output_field=DecimalField(max_digits=15, decimal_places=4)
             )
         )
-        if obj.warehouse:
-            return PurchaseItem.objects.filter(
-                product=obj.product,
-                purchase_order__status=['pending', 'processing'],
-                purchase_order__received=False,
-                purchase_order__warehouse_destination=obj.warehouse
-            ).aggregate(total_pending=total_expr)['total_pending'] or 0
+
+        return PurchaseItem.objects.filter(
+            product=obj.product,
+            purchase_order__status=['pending', 'processing'],
+            purchase_order__received=False,
+            purchase_order__warehouse_destination=obj.warehouse,
+            purchase_order__branch_destination=obj.branch
+        ).aggregate(total_pending=total_expr)['total_pending'] or 0
         
-        elif obj.branch:
-            return PurchaseItem.objects.filter(
-                product=obj.product,
-                purchase_order__status=['pending', 'processing'],
-                purchase_order__received=False,
-                purchase_order__branch_destination=obj.branch
-            ).aggregate(total_pending=total_expr)['total_pending'] or 0
-        
-        else:
-            return 0    
         
     def get_sale_order_pending(self, obj):
         """Cantidad pendiente en órdenes de venta"""
