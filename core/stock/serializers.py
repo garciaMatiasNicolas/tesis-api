@@ -244,7 +244,7 @@ class StockSerializer(serializers.ModelSerializer):
 
         return PurchaseItem.objects.filter(
             product=obj.product,
-            purchase_order__status='pending',
+            purchase_order__status__in=['pending'],
             purchase_order__received=False,
             purchase_order__warehouse_destination=obj.warehouse,
             purchase_order__branch_destination=obj.branch
